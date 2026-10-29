@@ -262,7 +262,7 @@ class BrowserDiagnosticsTests(unittest.TestCase):
                     return {"poi_labels": 10}
                 raise AssertionError("Unexpected script")
 
-        with self.assertRaisesRegex(SnapshotError, "1 complete cards versus 10 visible labels"):
+        with self.assertRaisesRegex(SnapshotError, "1 cards versus 10 visible labels"):
             _read_alerts(Page())
 
 
