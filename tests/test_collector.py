@@ -76,6 +76,29 @@ class BrowserSizeTests(unittest.TestCase):
                 browser_geometry()
 
 
+class SidebarScopingTests(unittest.TestCase):
+    def test_extractors_scope_to_right_side(self):
+        # Chart overlay text can also contain Point of Interest labels.
+        self.assertIn("window.innerWidth * 0.60", EXTRACT_CARDS_JS)
+        self.assertIn("window.innerWidth * 0.60", DIAG_JS)
+        self.assertIn("if (!el || !isSidebar(el)) continue;", EXTRACT_CARDS_JS)
+        self.assertIn("if (!isSidebar(node.parentElement)) continue;", DIAG_JS)
+
+    def test_chart_annotations_do_not_block_full_sidebar_baseline(self):
+        class Page:
+            def evaluate(self, script):
+                if script == EXTRACT_CARDS_JS:
+                    return [BUY, SELL]
+                if script == DIAG_JS:
+                    return {"document_poi_labels": 10, "poi_labels": 2,
+                            "excluded_chart_or_other_labels": 8}
+                raise AssertionError("Unexpected script")
+
+        alerts = _read_alerts(Page())
+        self.assertEqual(len(alerts), 2)
+        self.assertEqual([a.side for a in alerts], ["BUY", "SELL"])
+
+
 class BrowserDiagnosticsTests(unittest.TestCase):
     def test_empty_cards_report_safe_diagnostic(self):
         class Page:

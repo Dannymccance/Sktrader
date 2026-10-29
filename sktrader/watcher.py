@@ -29,10 +29,18 @@ def browser_geometry() -> tuple[dict[str, int], list[str]]:
         [f"--window-size={width + 80},{height + 80}", "--window-position=15,15"],
     )
 
-# The authenticated JIFU layout may wrap field-label text in nested spans.
-# Read text nodes and climb only to the nearest COMPLETE single-alert card.
-# Never fall back to the entire sidebar (that would mix multiple signals).
+# The JIFU dashboard has a large chart and a narrow Alerts sidebar. Chart
+# annotations can themselves contain "Point of Interest", so do not treat
+# every matching document text node as an alert. Only inspect the right sidebar.
+# The threshold is generous enough for the JIFU responsive split layout.
+SIDEBAR_THRESHOLD = 0.60
 EXTRACT_CARDS_JS = r"""() => {
+  const isSidebar = (el) => {
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 &&
+      r.left >= window.innerWidth * 0.60 &&
+      r.left < window.innerWidth && r.right <= window.innerWidth + 25;
+  };
   const tree = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
   const cards = [];
   const seen = new Set();
@@ -40,7 +48,7 @@ EXTRACT_CARDS_JS = r"""() => {
   while ((node = tree.nextNode())) {
     if ((node.nodeValue || '').trim().toLowerCase() !== 'point of interest') continue;
     let el = node.parentElement;
-    if (!el || !el.getClientRects().length) continue;
+    if (!el || !isSidebar(el)) continue;
     for (let depth = 0; depth < 22 && el; depth++, el = el.parentElement) {
       const text = (el.innerText || '').trim();
       if (text.length > 4500) break;
@@ -62,12 +70,19 @@ EXTRACT_CARDS_JS = r"""() => {
   return cards;
 }"""
 
-# Only counts and booleans. Never log cookies, screenshots, page HTML,
-# password inputs, login form contents, or the full website URL/query string.
+# Counts and booleans only, no signal prices, HTML, cookies, credentials or URLs.
+# The diagnostic distinguishes chart annotations from sidebar alert cards.
 DIAG_JS = r"""() => {
+  const isSidebar = (el) => {
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 &&
+      r.left >= window.innerWidth * 0.60 &&
+      r.left < window.innerWidth && r.right <= window.innerWidth + 25;
+  };
   const body = document.body?.innerText || '';
   const tree = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-  let poiLabels = 0;
+  let allPoi = 0;
+  let sidebarPoi = 0;
   const coverage = {
     auroux: 0, xauusd: 0, direction: 0, invalidation: 0,
     exit1: 0, exit2: 0, level: 0
@@ -76,7 +91,9 @@ DIAG_JS = r"""() => {
   while ((node = tree.nextNode())) {
     if ((node.nodeValue || '').trim().toLowerCase() !== 'point of interest'
         || !node.parentElement?.getClientRects().length) continue;
-    poiLabels++;
+    allPoi++;
+    if (!isSidebar(node.parentElement)) continue;
+    sidebarPoi++;
     const found = Object.fromEntries(Object.keys(coverage).map(k => [k, false]));
     let el = node.parentElement;
     for (let depth = 0; depth < 22 && el; depth++, el = el.parentElement) {
@@ -93,11 +110,13 @@ DIAG_JS = r"""() => {
     for (const k of Object.keys(coverage)) if (found[k]) coverage[k]++;
   }
   return {
+    document_poi_labels: allPoi,
+    excluded_chart_or_other_labels: allPoi - sidebarPoi,
+    poi_labels: sidebarPoi,
     field_coverage: coverage,
     path: location.pathname,
     ready_state: document.readyState,
     body_characters: body.length,
-    poi_labels: poiLabels,
     has_auroux: /\bAUROUX\b/i.test(body),
     has_xauusd: /\bXAUUSD\b/i.test(body),
     has_invalidation: /Invalidation/i.test(body),
