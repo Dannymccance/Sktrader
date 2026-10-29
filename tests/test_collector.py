@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from sktrader.core import AlertError, EventStore, SnapshotError, new_prefix, parse_card
-from sktrader.watcher import _alert_embed
+from sktrader.watcher import BROWSER_VIEWPORT, BROWSER_WINDOW_ARGS, _alert_embed
 
 
 BUY = """AUROUX
@@ -52,6 +52,13 @@ Exit 2
 4050.50000
 Level
 500 pips"""
+
+
+class BrowserSizeTests(unittest.TestCase):
+    def test_browser_fits_1280x800_vnc(self):
+        self.assertLessEqual(BROWSER_VIEWPORT["width"], 1280)
+        self.assertLessEqual(BROWSER_VIEWPORT["height"], 800)
+        self.assertIn("--window-size=1200,720", BROWSER_WINDOW_ARGS)
 
 
 class ParserTests(unittest.TestCase):
