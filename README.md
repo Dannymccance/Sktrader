@@ -172,8 +172,17 @@ Remove any obsolete `SKTRADER_DISCORD_WEBHOOK` line to avoid confusion;
 webhooks are no longer used. The bot token is validated on watcher startup.
 To avoid event duplication, run exactly one Sktrader watcher at a time.
 
-**Parser acceptance gate:** if JIFU shows ten Point of Interest labels but the
-collector recognises only one complete card, it refuses to save a baseline or
-advance signal history. Use `python -m sktrader diagnose` and inspect the
-`field_coverage` counts (only booleans/counters; no signal data or secrets).
-Do not enable continuous monitoring until every visible card parses.
+**Parser acceptance gate:** the JIFU chart itself may contain Point of
+Interest annotations. The collector now counts only anchors on the right side
+of the viewport (the Alerts sidebar), and does not treat chart labels as
+individual alert cards. If the number of complete sidebar cards is still less
+than the number of sidebar Point of Interest labels, it refuses to establish
+a baseline or advance signal history.
+
+Run `python -m sktrader diagnose` and check `document_poi_labels` (entire
+page), `excluded_chart_or_other_labels`, `poi_labels` (sidebar only),
+and the sidebar `field_coverage` counts. These contain only counts and
+booleans, not signal data or secrets. A user interface layout change may
+require revisiting the sidebar geometric threshold; never silently fall back
+to whole-page matching. Do not enable continuous monitoring unless
+`Alert capture: READY` is reported for the entire sidebar.
