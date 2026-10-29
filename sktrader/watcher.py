@@ -127,6 +127,56 @@ DIAG_JS = r"""() => {
   };
 }"""
 
+
+# One-off, manually invoked diagnostic for reviewing alert text boundaries.
+# Returns only small excerpts from single-card DOM nodes inside the Alerts
+# sidebar. Not used by the continuously running watcher.
+PROBE_CARDS_JS = r"""() => {
+  const rightSide = (el) => {
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 &&
+      r.left >= window.innerWidth * 0.60 &&
+      r.left < window.innerWidth && r.right <= window.innerWidth + 25;
+  };
+  const tree = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  const out = [];
+  let node;
+  while ((node = tree.nextNode()) && out.length < 15) {
+    if ((node.nodeValue || '').trim().toLowerCase() !== 'point of interest') continue;
+    if (!node.parentElement || !rightSide(node.parentElement)) continue;
+    let selected = null;
+    let el = node.parentElement;
+    for (let depth = 0; depth < 22 && el; depth++, el = el.parentElement) {
+      const content = (el.innerText || '').trim();
+      const matches = (content.match(/point of interest/gi) || []).length;
+      if (matches > 1 || content.length > 4500) break;
+      if (matches !== 1) continue;
+      const fields = {
+        auroux: /\bAUROUX\b/i.test(content),
+        xauusd: /\bXAUUSD\b/i.test(content),
+        direction: /\b(?:1M|5M|15M|30M|1H|4H)\s*-\s*(?:BUY|SELL)\b/i.test(content),
+        invalidation: /Invalidation/i.test(content),
+        exit1: /Exit\s*1/i.test(content),
+        exit2: /Exit\s*2/i.test(content),
+        level: /\bLevel\b/i.test(content)
+      };
+      // Last single-POI ancestor is the largest available independent card.
+      // Do not report full HTML, attributes, page title, URLs, cookies or storage.
+      let excerpt = content.replace(/\s+/g, ' ').slice(0, 650);
+      excerpt = excerpt.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[email]');
+      excerpt = excerpt.replace(/\b(?:Bearer|Bot)\s+[A-Za-z0-9._-]{15,}\b/gi, '[token]');
+      selected = {
+        depth,
+        characters: content.length,
+        fields,
+        excerpt
+      };
+    }
+    out.push(selected || {error: 'No single-POI ancestor found'});
+  }
+  return out;
+}"""
+
 @dataclass(frozen=True)
 class Config:
     url: str
@@ -322,6 +372,8 @@ def diagnose(config: Config) -> None:
             page.wait_for_timeout(5000)
             status = page.evaluate(DIAG_JS)
             print("Safe JIFU diagnostic:", json.dumps(status, sort_keys=True))
+            card_probe = page.evaluate(PROBE_CARDS_JS)
+            print("JIFU single-card structure samples:", json.dumps(card_probe, ensure_ascii=False))
             try:
                 alerts = _read_alerts(page)
             except SnapshotError as exc:
