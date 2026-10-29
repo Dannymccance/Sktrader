@@ -200,7 +200,9 @@ class Config:
         poll = float(os.getenv("SKTRADER_POLL_SECONDS", "5"))
         if not 1 <= poll <= 60:
             raise ValueError("Poll interval must be 1-60 seconds")
-        timeframe = os.getenv("SKTRADER_TIMEFRAME", "5M").strip().upper()
+        # Each newly published Auroux card is a separate signal, even when prices match.
+        # All supported chart timeframes are eligible unless explicitly filtered.
+        timeframe = os.getenv("SKTRADER_TIMEFRAME", "ALL").strip().upper()
         if timeframe not in {"ALL", "1M", "5M", "15M", "30M", "1H", "4H"}:
             raise ValueError("Unsupported timeframe")
         levels = frozenset(int(p.strip()) for p in os.getenv("SKTRADER_LEVELS", "250,500").split(","))
