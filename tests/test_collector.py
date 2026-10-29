@@ -148,6 +148,69 @@ class StructureProbeTests(unittest.TestCase):
         self.assertNotIn("document.cookie", PROBE_CARDS_JS)
 
 
+class IndependentAurouxTimeframeTests(unittest.TestCase):
+    @staticmethod
+    def _same_prices_three_frames():
+        # Screenshot example: three independent Auroux SELL cards have
+        # identical prices and scanner levels, but different timeframes.
+        base = """AUROUX
+55 minutes ago
+XAUUSD
+30M - SELL
+Point of Interest
+4024.50000
+Invalidation
+4034.50000
+Exit 1
+4014.50000
+Exit 2
+4004.50000
+Level
+250 pips"""
+        return [
+            base,
+            base.replace("55 minutes ago", "1 hours ago").replace("30M - SELL", "5M - SELL"),
+            base.replace("55 minutes ago", "5 hours ago").replace("30M - SELL", "1H - SELL"),
+        ]
+
+    def test_default_forwards_all_timeframes(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(Config.from_env(require_discord=False).timeframe, "ALL")
+
+    def test_three_equal_price_cards_have_three_distinct_fingerprints(self):
+        cards = self._same_prices_three_frames()
+        self.assertEqual(len({feed_fingerprint(c) for c in cards}), 3)
+        self.assertEqual(
+            [parse_card(c).timeframe for c in cards], ["30M", "5M", "1H"],
+        )
+        self.assertEqual({parse_card(c).poi for c in cards}, {"4024.50000"})
+        self.assertEqual({parse_card(c).tp1 for c in cards}, {"4014.50000"})
+
+    def test_all_three_new_cards_are_queued_individually(self):
+        cards = self._same_prices_three_frames()
+        with tempfile.TemporaryDirectory() as folder:
+            store = EventStore(Path(folder) / "events.db")
+            old = [HARMONICS, WOLFX, PRIME]
+            self.assertEqual(store.observe_feed(old), (0, True))
+            self.assertEqual(store.observe_feed(cards + old), (3, False))
+            events = store.pending()
+            self.assertEqual(len(events), 3)
+            self.assertEqual({a.timeframe for _, _, a in events}, {"30M", "5M", "1H"})
+            self.assertTrue(all(a.poi == "4024.50000" for _, _, a in events))
+            self.assertEqual(store.observe_feed(cards + old), (0, False))
+            store.conn.close()
+
+    def test_new_identical_card_is_not_collapsed_when_overlap_exists(self):
+        cards = self._same_prices_three_frames()
+        with tempfile.TemporaryDirectory() as folder:
+            store = EventStore(Path(folder) / "events.db")
+            old = cards + [HARMONICS, WOLFX, PRIME]
+            self.assertEqual(store.observe_feed(old), (0, True))
+            self.assertEqual(store.observe_feed([cards[0]] + old), (1, False))
+            self.assertEqual(store.pending()[0][2].timeframe, "30M")
+            store.conn.close()
+
+
 class MixedFeedTests(unittest.TestCase):
     def test_non_auroux_scanners_are_not_eligible(self):
         self.assertFalse(auroux_xauusd_card(WOLFX))
