@@ -5,7 +5,8 @@ import unittest
 from pathlib import Path
 
 from sktrader.core import AlertError, EventStore, SnapshotError, new_prefix, parse_card
-from sktrader.watcher import BROWSER_VIEWPORT, BROWSER_WINDOW_ARGS, _alert_embed
+from unittest.mock import patch
+from sktrader.watcher import browser_geometry, _alert_embed
 
 
 BUY = """AUROUX
@@ -55,10 +56,22 @@ Level
 
 
 class BrowserSizeTests(unittest.TestCase):
-    def test_browser_fits_1280x800_vnc(self):
-        self.assertLessEqual(BROWSER_VIEWPORT["width"], 1280)
-        self.assertLessEqual(BROWSER_VIEWPORT["height"], 800)
-        self.assertIn("--window-size=1200,720", BROWSER_WINDOW_ARGS)
+    def test_default_fits_1280x800_vnc(self):
+        with patch.dict("os.environ", {"SKTRADER_VIEWPORT_WIDTH": "1160", "SKTRADER_VIEWPORT_HEIGHT": "640"}):
+            viewport, args = browser_geometry()
+        self.assertEqual(viewport, {"width": 1160, "height": 640})
+        self.assertIn("--window-size=1240,720", args)
+
+    def test_1080p_isolated_vnc(self):
+        with patch.dict("os.environ", {"SKTRADER_VIEWPORT_WIDTH": "1760", "SKTRADER_VIEWPORT_HEIGHT": "920"}):
+            viewport, args = browser_geometry()
+        self.assertEqual(viewport, {"width": 1760, "height": 920})
+        self.assertIn("--window-size=1840,1000", args)
+
+    def test_bad_geometry_rejected(self):
+        with patch.dict("os.environ", {"SKTRADER_VIEWPORT_WIDTH": "6000"}):
+            with self.assertRaises(ValueError):
+                browser_geometry()
 
 
 class ParserTests(unittest.TestCase):
