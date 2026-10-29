@@ -79,3 +79,39 @@ There is **no MT5 integration or automatic trading in this release**. A future G
 ## Milestone 1 acceptance
 
 Authenticate -> confirm live alert cards parse -> baseline -> receive a fresh signal in Discord -> restart without replay -> verify failed session alerts. No order execution during acceptance.
+
+
+## Troubleshoot "No complete Auroux alert cards detected"
+
+The **black VNC screen is normal** when `SKTRADER_HEADLESS=true`.
+The actual collector failure is the missing DOM alert cards.
+
+Stop the running watcher with Ctrl+C before starting a second process using the
+same Chromium browser profile. The watchdog/monitor must not be running.
+
+Run the one-off safe diagnostic using the SAME environment as `watch`:
+
+```bash
+cd /opt/sktrader
+runuser -u dkmt5c -- bash -c '
+  set -a; source /opt/sktrader/.env; set +a
+  export HOME=/var/lib/dkcapital-mt5-3
+  export DISPLAY=:155
+  export XAUTHORITY=/var/lib/dkcapital-mt5-3/.local/share/sktrader/Xauthority-155
+  export PLAYWRIGHT_BROWSERS_PATH=/opt/sktrader/.browsers
+  exec /opt/sktrader/.venv/bin/python -m sktrader diagnose
+'
+```
+
+The diagnostic prints **only** page-path, HTML read-state, field-presence
+booleans and counts. It does not print JIFU page content, secrets or screenshots.
+
+- `possible_login=true`: browser session may have expired; reauthenticate
+  through VNC with `python -m sktrader login`.
+- `poi_labels=0`: JIFU may not have finished loading or Alerts is not open.
+- `poi_labels>0`, but zero complete cards: the JIFU DOM structure or field
+  text differs from the current extractor; update the parser through a PR.
+- `Alert capture: READY`: the DOM extractor has parsed the visible alerts;
+  close the diagnostic before running the normal `watch` process.
+
+No manual refresh loop or MT5 change is needed to troubleshoot.

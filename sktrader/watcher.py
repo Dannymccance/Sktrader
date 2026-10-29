@@ -29,31 +29,64 @@ def browser_geometry() -> tuple[dict[str, int], list[str]]:
         [f"--window-size={width + 80},{height + 80}", "--window-position=15,15"],
     )
 
-# The exact authenticated DOM is not yet available. This extractor climbs
-# from each visible Point of Interest label to its smallest complete card.
-# If the JIFU layout changes, fail closed rather than reading a whole sidebar.
+# The authenticated JIFU layout may wrap field-label text in nested spans.
+# Read text nodes and climb only to the nearest COMPLETE single-alert card.
+# Never fall back to the entire sidebar (that would mix multiple signals).
 EXTRACT_CARDS_JS = r"""() => {
-    const leaves = [...document.querySelectorAll('div,span,p,small,strong')]
-      .filter(e => e.children.length === 0 &&
-        (e.textContent || '').trim().toLowerCase() === 'point of interest');
-    const cards = [];
-    for (const leaf of leaves) {
-      let node = leaf;
-      for (let depth=0; depth<12 && node; depth++, node=node.parentElement) {
-        const text = (node.innerText || '').trim();
-        if (text.length > 2000) break;
-        const poiCount = (text.match(/point of interest/gi) || []).length;
-        if (poiCount === 1 && /AUROUX/i.test(text) && /XAUUSD/i.test(text)
-            && /Invalidation/i.test(text) && /Exit\s*1/i.test(text)
-            && /Exit\s*2/i.test(text) && /\bLevel\b/i.test(text)) {
+  const tree = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  const cards = [];
+  const seen = new Set();
+  let node;
+  while ((node = tree.nextNode())) {
+    if ((node.nodeValue || '').trim().toLowerCase() !== 'point of interest') continue;
+    let el = node.parentElement;
+    if (!el || !el.getClientRects().length) continue;
+    for (let depth = 0; depth < 22 && el; depth++, el = el.parentElement) {
+      const text = (el.innerText || '').trim();
+      if (text.length > 4500) break;
+      const fields = (text.match(/point of interest/gi) || []).length;
+      if (fields > 1) break;
+      if (fields !== 1) continue;
+      if (/\bAUROUX\b/i.test(text) && /\bXAUUSD\b/i.test(text) &&
+          /\b(?:1M|5M|15M|30M|1H|4H)\s*-\s*(?:BUY|SELL)\b/i.test(text) &&
+          /Invalidation/i.test(text) && /Exit\s*1/i.test(text) &&
+          /Exit\s*2/i.test(text) && /\bLevel\b/i.test(text)) {
+        if (!seen.has(el)) {
           cards.push(text);
-          break;
+          seen.add(el);
         }
+        break;
       }
     }
-    return cards;
+  }
+  return cards;
 }"""
 
+# Only counts and booleans. Never log cookies, screenshots, page HTML,
+# password inputs, login form contents, or the full website URL/query string.
+DIAG_JS = r"""() => {
+  const body = document.body?.innerText || '';
+  const tree = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  let poiLabels = 0;
+  let node;
+  while ((node = tree.nextNode())) {
+    if ((node.nodeValue || '').trim().toLowerCase() === 'point of interest'
+        && node.parentElement?.getClientRects().length) poiLabels++;
+  }
+  return {
+    path: location.pathname,
+    ready_state: document.readyState,
+    body_characters: body.length,
+    poi_labels: poiLabels,
+    has_auroux: /\bAUROUX\b/i.test(body),
+    has_xauusd: /\bXAUUSD\b/i.test(body),
+    has_invalidation: /Invalidation/i.test(body),
+    has_exit1: /Exit\s*1/i.test(body),
+    has_exit2: /Exit\s*2/i.test(body),
+    has_alerts_tab: /\bAlerts\b/i.test(body),
+    possible_login: /Log\s*in|Sign\s*in/i.test(body) && /Password/i.test(body)
+  };
+}"""
 
 @dataclass(frozen=True)
 class Config:
@@ -114,7 +147,11 @@ def _prepare_page(page) -> None:
 def _read_alerts(page) -> list[Alert]:
     raw_cards: list[str] = page.evaluate(EXTRACT_CARDS_JS)
     if not raw_cards:
-        raise SnapshotError("No complete Auroux alert cards detected; possible logout or JIFU UI change")
+        safe_status = page.evaluate(DIAG_JS)
+        raise SnapshotError(
+            "No complete Auroux alert cards detected; browser diagnostic: "
+            + json.dumps(safe_status, sort_keys=True)
+        )
     alerts: list[Alert] = []
     for text in raw_cards:
         try:
@@ -195,6 +232,35 @@ def login(config: Config) -> None:
             context.close()
 
 
+def diagnose(config: Config) -> None:
+    """One-off DOM diagnostic without revealing any website content or credentials."""
+    from playwright.sync_api import sync_playwright
+
+    _secure_profile(config.profile)
+    with sync_playwright() as playwright:
+        viewport, args = browser_geometry()
+        context = playwright.chromium.launch_persistent_context(
+            str(config.profile), headless=config.headless,
+            viewport=viewport, args=args,
+        )
+        try:
+            page = context.pages[0] if context.pages else context.new_page()
+            page.goto(config.url, wait_until="domcontentloaded", timeout=45000)
+            _prepare_page(page)
+            # Give JIFU's client-side app a chance to populate asynchronously.
+            page.wait_for_timeout(5000)
+            status = page.evaluate(DIAG_JS)
+            print("Safe JIFU diagnostic:", json.dumps(status, sort_keys=True))
+            try:
+                alerts = _read_alerts(page)
+            except SnapshotError as exc:
+                print("Alert capture: NOT READY.", exc)
+            else:
+                print(f"Alert capture: READY; {len(alerts)} complete Auroux cards")
+        finally:
+            context.close()
+
+
 def watch(config: Config) -> None:
     from playwright.sync_api import sync_playwright
 
@@ -245,11 +311,13 @@ def watch(config: Config) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Sktrader JIFU collector (watch-only)")
-    parser.add_argument("command", choices=["login", "watch"])
+    parser.add_argument("command", choices=["login", "diagnose", "watch"])
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     config = Config.from_env(require_webhook=args.command == "watch")
     if args.command == "login":
         login(config)
+    elif args.command == "diagnose":
+        diagnose(config)
     else:
         watch(config)
