@@ -7,10 +7,10 @@ Minimal JIFU scanner monitoring for DK Capital: **JIFU Auroux Alerts -> Python/P
 ## What it does
 
 - Keeps an authenticated Chromium session on the existing VPS.
-- Reads Auroux alert cards without reloading the chart every 5 seconds (configurable).
+- Tracks the mixed JIFU Alerts sidebar (Auroux, SniperPro, WolfX, Harmonics etc.) every 5 seconds without reloading the chart, but only forwards AUROUX XAUUSD.
 - Validates XAUUSD, BUY/SELL, timeframe, point of interest, invalidation and both exits.
 - Saves a baseline on first launch, so old alerts are not posted as new trades.
-- Detects newly inserted cards even when the same prices have appeared before.
+- Detects new AUROUX XAUUSD cards by comparing the entire ordered mixed-provider feed, including surrounding non-Auroux cards for overlap.
 - Records alerts and Discord delivery status in SQLite for restart recovery.
 - Posts new eligible alerts to Discord, explicitly marked **ALERT ONLY - NO TRADE**.
 - Fails closed on missing or malformed alerts and warns on repeated read failures.
@@ -52,7 +52,7 @@ set -a; . ./.env; set +a
 .venv/bin/python -m sktrader watch
 ```
 
-The initial log should report `Baseline saved: N existing alerts`. **Historical cards are intentionally not sent**. New cards produce Discord notifications. Run `python -m unittest discover -s tests -v` for offline tests.
+The initial log should report `Baseline saved: N mixed-scanner feed cards (M Auroux XAUUSD)`. **Historical cards are intentionally not sent**. New cards produce Discord notifications. Run `python -m unittest discover -s tests -v` for offline tests.
 
 After a successful interactive test, install the example systemd service at `deploy/sktrader.service.example`, substituting the actual Linux user and paths. Only one process may use the browser profile at once.
 
@@ -71,7 +71,7 @@ After a successful interactive test, install the example systemd service at `dep
 
 ## Important limitations
 
-The precise authenticated JIFU DOM hasn't yet been tested. The extractor works from the *Point of Interest* label up to the smallest complete alert card and may need adjusting during the first logged-in test. JIFU automated access must be allowed under the subscription terms.
+The authenticated JIFU DOM was checked on 29 October 2026. Although the Auroux scanner is selected, the Alerts sidebar can contain HARMONICS, SNIPERPRO, WOLFX and PRIME alerts for unrelated instruments. The collector now accepts mixed-scanner cards as source-feed context and validates only AUROUX XAUUSD for publication. JIFU automated access must be allowed under the subscription terms.
 
 JIFU examples do not expose unique event IDs or precise issuance timestamps. Ordered snapshot comparison helps preserve repeated same-price signals, but the collector deliberately stops trusting a list after an unexplained reordering or complete replacement. The Discord message nonce limits accidental duplicate posts over a short window; durable SQLite state retains publication intent. A duplicate is still possible after longer outages or a crash.
 
@@ -82,10 +82,10 @@ There is **no MT5 integration or automatic trading in this release**. A future G
 Authenticate -> confirm live alert cards parse -> baseline -> receive a fresh signal in Discord -> restart without replay -> verify failed session alerts. No order execution during acceptance.
 
 
-## Troubleshoot "No complete Auroux alert cards detected"
+## Troubleshoot mixed-scanner JIFU Alerts
 
 The **black VNC screen is normal** when `SKTRADER_HEADLESS=true`.
-The actual collector failure is the missing DOM alert cards.
+A headless browser can show a valid feed with **zero current AUROUX XAUUSD alerts**. That is not an error. The collector must see all visible sidebar cards to maintain its ordered feed snapshot.
 
 Stop the running watcher with Ctrl+C before starting a second process using the
 same Chromium browser profile. The watchdog/monitor must not be running.
@@ -172,17 +172,6 @@ Remove any obsolete `SKTRADER_DISCORD_WEBHOOK` line to avoid confusion;
 webhooks are no longer used. The bot token is validated on watcher startup.
 To avoid event duplication, run exactly one Sktrader watcher at a time.
 
-**Parser acceptance gate:** the JIFU chart itself may contain Point of
-Interest annotations. The collector now counts only anchors on the right side
-of the viewport (the Alerts sidebar), and does not treat chart labels as
-individual alert cards. If the number of complete sidebar cards is still less
-than the number of sidebar Point of Interest labels, it refuses to establish
-a baseline or advance signal history.
+**Parser acceptance gate:** The diagnostic reports how many mixed-scanner card boundaries are readable. A mixed feed of 10 cards with zero AUROUX XAUUSD is a valid capture, not a parser failure. Only source `AUROUX` and instrument `XAUUSD` are eligible for publication; a WOLFX/XAUUSD signal must never be forwarded as Auroux. The initial mixed-feed read establishes a baseline and does not replay historical posts. An incomplete feed or malformed new eligible Auroux signal fails closed without advancing the durable snapshot. A new Auroux card should appear in Discord after its insertion into the feed, subject to the configured timeframe and scanner-level filters.
 
-Run `python -m sktrader diagnose` and check `document_poi_labels` (entire
-page), `excluded_chart_or_other_labels`, `poi_labels` (sidebar only),
-and the sidebar `field_coverage` counts. The manual `diagnose` command also prints up to 15 bounded single-card text excerpts (650 characters maximum each) so that broken card DOM boundaries can be identified. These may include the displayed signal prices: review locally before sharing. These contain only counts and
-booleans, not signal data or secrets. A user interface layout change may
-require revisiting the sidebar geometric threshold; never silently fall back
-to whole-page matching. Do not enable continuous monitoring unless
-`Alert capture: READY` is reported for the entire sidebar.
+The All filter in JIFU is a **timeframe** filter, not proof that the alert feed is restricted to the selected scanner. If source filtering is supported in the JIFU UI, it can be investigated separately; don't assume it is active.

@@ -12,7 +12,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-from sktrader.core import Alert, AlertError, EventStore, SnapshotError, parse_card
+from sktrader.core import Alert, AlertError, EventStore, SnapshotError, auroux_xauusd_card, parse_card
 
 LOG = logging.getLogger("sktrader")
 DEFAULT_URL = "https://charts.jifulive.com/jifu/dashboard"
@@ -55,10 +55,10 @@ EXTRACT_CARDS_JS = r"""() => {
       const fields = (text.match(/point of interest/gi) || []).length;
       if (fields > 1) break;
       if (fields !== 1) continue;
-      if (/\bAUROUX\b/i.test(text) && /\bXAUUSD\b/i.test(text) &&
-          /\b(?:1M|5M|15M|30M|1H|4H)\s*-\s*(?:BUY|SELL)\b/i.test(text) &&
-          /Invalidation/i.test(text) && /Exit\s*1/i.test(text) &&
-          /Exit\s*2/i.test(text) && /\bLevel\b/i.test(text)) {
+      // This is the MIXED JIFU Alerts feed, not an Auroux-only feed.
+      // Other scanners may have fewer exits or no invalidation.
+      if (/\b(?:1M|5M|15M|30M|1H|4H)\s*-\s*(?:BUY|SELL)\b/i.test(text) &&
+          /Point of Interest\s*[0-9]/i.test(text)) {
         if (!seen.has(el)) {
           cards.push(text);
           seen.add(el);
@@ -238,24 +238,31 @@ def _prepare_page(page) -> None:
         LOG.info("Could not select All filter; ensure the panel is set to All manually")
 
 
-def _read_alerts(page) -> list[Alert]:
+def _read_feed_cards(page) -> list[str]:
+    """Read complete single-card DOM segments across all JIFU scanners."""
     raw_cards: list[str] = page.evaluate(EXTRACT_CARDS_JS)
     status = page.evaluate(DIAG_JS)
     if not raw_cards or len(raw_cards) != status["poi_labels"]:
-        # Never establish a baseline or advance the durable event cursor
-        # from a partial visible alert list; that can hide future signals.
+        # A partial feed cannot be used for overlap/dedup or baselining.
         raise SnapshotError(
-            f"Incomplete Auroux scan: {len(raw_cards)} complete cards versus "
+            f"Incomplete mixed JIFU feed: {len(raw_cards)} cards versus "
             f"{status['poi_labels']} visible labels; browser diagnostic: "
             + json.dumps(status, sort_keys=True)
         )
+    return raw_cards
+
+
+def _read_alerts(page) -> list[Alert]:
+    """Return only AUROUX XAUUSD from a complete mixed-scanner feed."""
+    raw_cards = _read_feed_cards(page)
     alerts: list[Alert] = []
     for text in raw_cards:
+        if not auroux_xauusd_card(text):
+            continue
         try:
             alerts.append(parse_card(text))
         except AlertError as exc:
-            # Do not update the snapshot if even one visible card is malformed.
-            raise SnapshotError(f"Unparseable alert card: {exc}") from exc
+            raise SnapshotError(f"Unparseable AUROUX XAUUSD card: {exc}") from exc
     return alerts
 
 
@@ -377,9 +384,10 @@ def diagnose(config: Config) -> None:
             try:
                 alerts = _read_alerts(page)
             except SnapshotError as exc:
-                print("Alert capture: NOT READY.", exc)
+                print("Feed capture: NOT READY.", exc)
             else:
-                print(f"Alert capture: READY; {len(alerts)} complete Auroux cards")
+                print(f"Feed capture: READY; {status['poi_labels']} mixed-scanner cards; "
+                      f"{len(alerts)} AUROUX XAUUSD alerts currently visible")
         finally:
             context.close()
 
@@ -406,12 +414,16 @@ def watch(config: Config) -> None:
             while True:
                 started = time.monotonic()
                 try:
-                    alerts = _read_alerts(page)
-                    count, baseline = store.observe(alerts)
+                    feed_cards = _read_feed_cards(page)
+                    count, baseline = store.observe_feed(feed_cards)
                     if baseline:
-                        LOG.info("Baseline saved: %s existing alerts (not replayed)", len(alerts))
+                        auroux_count = sum(auroux_xauusd_card(card) for card in feed_cards)
+                        LOG.info(
+                            "Baseline saved: %s mixed-scanner feed cards (%s Auroux XAUUSD); "
+                            "historical signals not replayed", len(feed_cards), auroux_count
+                        )
                     elif count:
-                        LOG.info("Detected %s newly inserted alerts", count)
+                        LOG.info("Detected %s new Auroux XAUUSD alerts", count)
                     _send_pending(store, config)
                     if health_notified:
                         _notify_health(config, "Recovered: JIFU alert parsing resumed")

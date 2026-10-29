@@ -5,10 +5,10 @@ import unittest
 from pathlib import Path
 import os
 
-from sktrader.core import AlertError, EventStore, SnapshotError, new_prefix, parse_card
+from sktrader.core import AlertError, EventStore, SnapshotError, auroux_xauusd_card, feed_fingerprint, new_prefix, parse_card
 from unittest.mock import patch
 from unittest import mock
-from sktrader.watcher import browser_geometry, _alert_embed, _read_alerts, DIAG_JS, EXTRACT_CARDS_JS, PROBE_CARDS_JS, Config, _post_discord, _bot_token
+from sktrader.watcher import browser_geometry, _alert_embed, _read_alerts, _read_feed_cards, DIAG_JS, EXTRACT_CARDS_JS, PROBE_CARDS_JS, Config, _post_discord, _bot_token
 
 
 BUY = """AUROUX
@@ -55,6 +55,45 @@ Exit 2
 4050.50000
 Level
 500 pips"""
+
+
+HARMONICS = """HARMONICS
+2 minutes ago
+BTCUSDT
+5M - BUY
+Point of Interest
+78469.95234
+Invalidation
+78161.75606
+Exit 1
+78712.70942
+Exit 2
+78926.48058
+Exit 3
+79272.50000"""
+
+WOLFX = """WOLFX
+38 minutes ago
+XAUUSD
+1M - SELL
+Point of Interest
+4014.53000
+Invalidation
+4026.55000
+Exit 1
+4002.51000
+Exit 2
+3978.47000
+Exit 3
+3954.43000"""
+
+PRIME = """PRIME
+17 minutes ago
+XAGUSD
+15M - BUY
+Point of Interest
+51.82150
+Zone S0"""
 
 
 class BrowserSizeTests(unittest.TestCase):
@@ -109,6 +148,84 @@ class StructureProbeTests(unittest.TestCase):
         self.assertNotIn("document.cookie", PROBE_CARDS_JS)
 
 
+class MixedFeedTests(unittest.TestCase):
+    def test_non_auroux_scanners_are_not_eligible(self):
+        self.assertFalse(auroux_xauusd_card(WOLFX))
+        self.assertFalse(auroux_xauusd_card(HARMONICS))
+        self.assertFalse(auroux_xauusd_card(PRIME))
+        self.assertTrue(auroux_xauusd_card(BUY))
+        self.assertFalse(auroux_xauusd_card(BUY.replace("XAUUSD", "EURUSD")))
+
+    def test_relative_age_does_not_change_feed_identity(self):
+        self.assertEqual(feed_fingerprint(HARMONICS),
+                         feed_fingerprint(HARMONICS.replace("2 minutes ago", "1 hour ago")))
+        self.assertEqual(feed_fingerprint(WOLFX),
+                         feed_fingerprint(WOLFX.replace("38 minutes ago", "39 minutes ago")))
+
+    def test_mixed_feed_read_is_complete_and_filters_auroux(self):
+        cards = [HARMONICS, WOLFX, PRIME, BUY]
+        class Page:
+            def evaluate(self, script):
+                if script == EXTRACT_CARDS_JS:
+                    return cards
+                if script == DIAG_JS:
+                    return {"poi_labels": 4, "has_auroux": True}
+                raise AssertionError("Unexpected script")
+
+        self.assertEqual(len(_read_feed_cards(Page())), 4)
+        alerts = _read_alerts(Page())
+        self.assertEqual(len(alerts), 1)
+        self.assertEqual(alerts[0].scanner, "AUROUX")
+
+    def test_mixed_feed_without_any_auroux_is_valid(self):
+        cards = [HARMONICS, WOLFX, PRIME]
+        class Page:
+            def evaluate(self, script):
+                if script == EXTRACT_CARDS_JS:
+                    return cards
+                if script == DIAG_JS:
+                    return {"poi_labels": 3}
+                raise AssertionError("Unexpected script")
+
+        self.assertEqual(_read_alerts(Page()), [])
+
+    def test_mixed_feed_sequence_detects_new_auroux_without_replaying_history(self):
+        with tempfile.TemporaryDirectory() as temp:
+            db = EventStore(Path(temp) / "events.db")
+            old = [HARMONICS, WOLFX, PRIME]
+            self.assertEqual(db.observe_feed(old), (0, True))
+            self.assertEqual(db.pending(), [])
+            # New Auroux post appears above three other scanners.
+            self.assertEqual(db.observe_feed([BUY] + old), (1, False))
+            pending = db.pending()
+            self.assertEqual(len(pending), 1)
+            self.assertEqual(pending[0][2].symbol, "XAUUSD")
+            self.assertEqual(pending[0][2].scanner, "AUROUX")
+            db.delivered(pending[0][0])
+            self.assertEqual(db.pending(), [])
+            # Relative age advances on every rendered card.
+            older = [BUY.replace("6 minutes ago", "7 minutes ago"),
+                     HARMONICS.replace("2 minutes ago", "3 minutes ago"),
+                     WOLFX.replace("38 minutes ago", "39 minutes ago"),
+                     PRIME.replace("17 minutes ago", "18 minutes ago")]
+            self.assertEqual(db.observe_feed(older), (0, False))
+            # Other providers and instruments do not generate delivery.
+            self.assertEqual(db.observe_feed([HARMONICS] + older), (0, False))
+            self.assertEqual(db.pending(), [])
+            db.conn.close()
+
+    def test_malformed_new_auroux_fails_before_snapshot_advance(self):
+        with tempfile.TemporaryDirectory() as temp:
+            db = EventStore(Path(temp) / "events.db")
+            old = [HARMONICS, WOLFX, PRIME]
+            self.assertEqual(db.observe_feed(old), (0, True))
+            malformed = BUY.replace("4015.50000", "4030.50000")
+            with self.assertRaisesRegex(SnapshotError, "Unparseable new AUROUX"):
+                db.observe_feed([malformed] + old)
+            self.assertEqual(db.observe_feed([BUY] + old), (1, False))
+            db.conn.close()
+
+
 class BrowserDiagnosticsTests(unittest.TestCase):
     def test_empty_cards_report_safe_diagnostic(self):
         class Page:
@@ -145,7 +262,7 @@ class BrowserDiagnosticsTests(unittest.TestCase):
                     return {"poi_labels": 10}
                 raise AssertionError("Unexpected script")
 
-        with self.assertRaisesRegex(SnapshotError, "1 complete cards versus 10 visible labels"):
+        with self.assertRaisesRegex(SnapshotError, "1 cards versus 10 visible labels"):
             _read_alerts(Page())
 
 
