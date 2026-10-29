@@ -6,7 +6,7 @@ from pathlib import Path
 
 from sktrader.core import AlertError, EventStore, SnapshotError, new_prefix, parse_card
 from unittest.mock import patch
-from sktrader.watcher import browser_geometry, _alert_embed
+from sktrader.watcher import browser_geometry, _alert_embed, _read_alerts, DIAG_JS, EXTRACT_CARDS_JS
 
 
 BUY = """AUROUX
@@ -72,6 +72,31 @@ class BrowserSizeTests(unittest.TestCase):
         with patch.dict("os.environ", {"SKTRADER_VIEWPORT_WIDTH": "6000"}):
             with self.assertRaises(ValueError):
                 browser_geometry()
+
+
+class BrowserDiagnosticsTests(unittest.TestCase):
+    def test_empty_cards_report_safe_diagnostic(self):
+        class Page:
+            def evaluate(self, script):
+                if script == EXTRACT_CARDS_JS:
+                    return []
+                if script == DIAG_JS:
+                    return {"poi_labels": 3, "possible_login": False, "has_auroux": True}
+                self.fail("Unexpected script")
+
+        with self.assertRaises(SnapshotError) as caught:
+            _read_alerts(Page())
+        self.assertIn('"poi_labels": 3', str(caught.exception))
+        self.assertNotIn("password", str(caught.exception).lower())
+
+    def test_valid_card_is_parsed(self):
+        class Page:
+            def evaluate(self, script):
+                if script == EXTRACT_CARDS_JS:
+                    return [BUY]
+                raise AssertionError("Unexpected diagnostics for valid card")
+
+        self.assertEqual(_read_alerts(Page())[0].poi, "4025.50000")
 
 
 class ParserTests(unittest.TestCase):
