@@ -30,7 +30,7 @@ cp .env.example .env
 chmod 600 .env
 ```
 
-If Chromium reports missing system libraries, install the distribution's Playwright browser dependencies. Edit `.env` locally with your Discord webhook and paths. Never commit JIFU cookies, login credentials, webhooks or the browser profile to GitHub. The repository is **public**.
+If Chromium reports missing system libraries, install the distribution's Playwright browser dependencies. Edit `.env` locally with the existing DK Capital Discord channel ID, secure bot-token file path and browser paths. Never commit JIFU cookies, login credentials, Discord bot tokens or the browser profile to GitHub. The repository is **public**.
 
 ### Log in through VNC
 
@@ -64,7 +64,8 @@ After a successful interactive test, install the example systemd service at `dep
 | `SKTRADER_TIMEFRAME` | `5M` |
 | `SKTRADER_LEVELS` | `250,500` |
 | `SKTRADER_HEADLESS` | `true` |
-| `SKTRADER_DISCORD_WEBHOOK` | Required for monitoring |
+| `SKTRADER_DISCORD_CHANNEL_ID` | Existing DK Capital Discord bot destination, `1565508564775075981` |
+| `SKTRADER_DISCORD_BOT_TOKEN_FILE` | Private local file containing existing bot token, readable only by the Sktrader Linux user |
 | `SKTRADER_BROWSER_PROFILE` | Local persistent browser state |
 | `SKTRADER_DATABASE` | Local SQLite alert journal |
 
@@ -72,7 +73,7 @@ After a successful interactive test, install the example systemd service at `dep
 
 The precise authenticated JIFU DOM hasn't yet been tested. The extractor works from the *Point of Interest* label up to the smallest complete alert card and may need adjusting during the first logged-in test. JIFU automated access must be allowed under the subscription terms.
 
-JIFU examples do not expose unique event IDs or precise issuance timestamps. Ordered snapshot comparison helps preserve repeated same-price signals, but the collector deliberately stops trusting a list after an unexplained reordering or complete replacement. Discord may occasionally receive a duplicate after a network/crash ambiguity; SQLite keeps the event record.
+JIFU examples do not expose unique event IDs or precise issuance timestamps. Ordered snapshot comparison helps preserve repeated same-price signals, but the collector deliberately stops trusting a list after an unexplained reordering or complete replacement. The Discord message nonce limits accidental duplicate posts over a short window; durable SQLite state retains publication intent. A duplicate is still possible after longer outages or a crash.
 
 There is **no MT5 integration or automatic trading in this release**. A future GitHub PR will require an isolated Auroux execution adapter, shared portfolio risk budget, broker order reconciliation and explicit live activation. Existing DK Capital EA and orders are not changed.
 
@@ -115,3 +116,64 @@ booleans and counts. It does not print JIFU page content, secrets or screenshots
   close the diagnostic before running the normal `watch` process.
 
 No manual refresh loop or MT5 change is needed to troubleshoot.
+
+## Reuse existing DK Capital Discord bot (no webhook, no second bot)
+
+Sktrader sends `POST /api/v10/channels/1565508564775075981/messages`
+as the **existing DK Capital bot** via its token and the Discord REST API.
+It does not connect another Discord Gateway session, launch another bot
+process, restart DK Capital services, or touch MT5.
+
+Configure the already-installed DK Capital bot to have **View Channel**,
+**Send Messages** and **Embed Links** access to channel
+`1565508564775075981`. Do not paste its token into chat, GitHub,
+process arguments or Sktrader's readable `.env` file.
+
+To create a private token file locally on the VPS using the existing
+`/opt/dkcapital/.env` value, run this **as root**. It does not display
+the secret and creates a new file readable only by Linux user `dkmt5c`.
+It will refuse to overwrite an existing secret file:
+
+```bash
+python3 - <<'PY'
+import os
+import pwd
+from pathlib import Path
+
+source = Path("/opt/dkcapital/.env")
+target = Path("/var/lib/dkcapital-mt5-3/.local/share/sktrader/discord-bot-token")
+lines = source.read_text(encoding="utf-8").splitlines()
+matches = [line.split("=", 1)[1].strip().strip('"').strip("'")
+           for line in lines if line.lstrip().startswith("DISCORD_BOT_TOKEN=")]
+if len(matches) != 1 or len(matches[0]) < 20:
+    raise SystemExit("Expected one populated DISCORD_BOT_TOKEN in DKCapital .env")
+uid = pwd.getpwnam("dkmt5c").pw_uid
+gid = pwd.getpwnam("dkmt5c").pw_gid
+fd = os.open(str(target), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+try:
+    os.fchown(fd, uid, gid)
+    os.write(fd, matches[0].encode("utf-8"))
+    os.fchmod(fd, 0o400)
+finally:
+    os.close(fd)
+print("Private bot token file created; token was not displayed")
+PY
+```
+
+Set in `/opt/sktrader/.env` (the actual token **must not**
+appear there):
+
+```dotenv
+SKTRADER_DISCORD_CHANNEL_ID=1565508564775075981
+SKTRADER_DISCORD_BOT_TOKEN_FILE=/var/lib/dkcapital-mt5-3/.local/share/sktrader/discord-bot-token
+```
+
+Remove any obsolete `SKTRADER_DISCORD_WEBHOOK` line to avoid confusion;
+webhooks are no longer used. The bot token is validated on watcher startup.
+To avoid event duplication, run exactly one Sktrader watcher at a time.
+
+**Parser acceptance gate:** if JIFU shows ten Point of Interest labels but the
+collector recognises only one complete card, it refuses to save a baseline or
+advance signal history. Use `python -m sktrader diagnose` and inspect the
+`field_coverage` counts (only booleans/counters; no signal data or secrets).
+Do not enable continuous monitoring until every visible card parses.
