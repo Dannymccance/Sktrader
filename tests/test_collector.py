@@ -3,10 +3,12 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+import os
 
 from sktrader.core import AlertError, EventStore, SnapshotError, new_prefix, parse_card
 from unittest.mock import patch
-from sktrader.watcher import browser_geometry, _alert_embed, _read_alerts, DIAG_JS, EXTRACT_CARDS_JS
+from unittest import mock
+from sktrader.watcher import browser_geometry, _alert_embed, _read_alerts, DIAG_JS, EXTRACT_CARDS_JS, Config, _post_discord, _bot_token
 
 
 BUY = """AUROUX
@@ -94,9 +96,64 @@ class BrowserDiagnosticsTests(unittest.TestCase):
             def evaluate(self, script):
                 if script == EXTRACT_CARDS_JS:
                     return [BUY]
-                raise AssertionError("Unexpected diagnostics for valid card")
+                if script == DIAG_JS:
+                    return {"poi_labels": 1}
+                raise AssertionError("Unexpected script")
 
         self.assertEqual(_read_alerts(Page())[0].poi, "4025.50000")
+
+
+    def test_incomplete_list_refuses_baseline(self):
+        class Page:
+            def evaluate(self, script):
+                if script == EXTRACT_CARDS_JS:
+                    return [BUY]
+                if script == DIAG_JS:
+                    return {"poi_labels": 10}
+                raise AssertionError("Unexpected script")
+
+        with self.assertRaisesRegex(SnapshotError, "1 complete cards versus 10 visible labels"):
+            _read_alerts(Page())
+
+
+class ExistingDiscordBotTests(unittest.TestCase):
+    def test_delivery_uses_bot_identity_and_exact_channel(self):
+        with tempfile.TemporaryDirectory() as folder:
+            secret = Path(folder) / "bot-token"
+            secret.write_text("test-DKCapital-bot-secret-123456789", encoding="utf-8")
+            secret.chmod(0o600)
+            with patch.dict(os.environ, {
+                "SKTRADER_DISCORD_CHANNEL_ID": "1565508564775075981",
+                "SKTRADER_DISCORD_BOT_TOKEN_FILE": str(secret),
+            }):
+                config = Config.from_env(require_discord=True)
+            with patch("sktrader.watcher.urllib.request.urlopen") as opened:
+                opened.return_value.__enter__.return_value.status = 200
+                _post_discord(config, {"content": "test", "allowed_mentions": {"parse": []}}, event_id=5)
+                request = opened.call_args.args[0]
+            self.assertEqual(request.full_url, "https://discord.com/api/v10/channels/1565508564775075981/messages")
+            self.assertEqual(request.get_header("Authorization"), "Bot test-DKCapital-bot-secret-123456789")
+            self.assertEqual(request.get_method(), "POST")
+            self.assertEqual(json.loads(request.data), {
+                "content": "test", "allowed_mentions": {"parse": []},
+                "nonce": "sktrader-5", "enforce_nonce": True,
+            })
+
+    def test_rejects_token_file_with_group_permissions(self):
+        with tempfile.TemporaryDirectory() as folder:
+            secret = Path(folder) / "bot-token"
+            secret.write_text("test-DKCapital-bot-secret-123456789", encoding="utf-8")
+            secret.chmod(0o640)
+            with self.assertRaises(PermissionError):
+                _bot_token(secret)
+
+    def test_channel_id_required_for_watcher(self):
+        with patch.dict(os.environ, {
+            "SKTRADER_DISCORD_CHANNEL_ID": "",
+            "SKTRADER_DISCORD_BOT_TOKEN_FILE": "/tmp/some-private-file",
+        }):
+            with self.assertRaisesRegex(ValueError, "channel snowflake"):
+                Config.from_env(require_discord=True)
 
 
 class ParserTests(unittest.TestCase):

@@ -68,12 +68,32 @@ DIAG_JS = r"""() => {
   const body = document.body?.innerText || '';
   const tree = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
   let poiLabels = 0;
+  const coverage = {
+    auroux: 0, xauusd: 0, direction: 0, invalidation: 0,
+    exit1: 0, exit2: 0, level: 0
+  };
   let node;
   while ((node = tree.nextNode())) {
-    if ((node.nodeValue || '').trim().toLowerCase() === 'point of interest'
-        && node.parentElement?.getClientRects().length) poiLabels++;
+    if ((node.nodeValue || '').trim().toLowerCase() !== 'point of interest'
+        || !node.parentElement?.getClientRects().length) continue;
+    poiLabels++;
+    const found = Object.fromEntries(Object.keys(coverage).map(k => [k, false]));
+    let el = node.parentElement;
+    for (let depth = 0; depth < 22 && el; depth++, el = el.parentElement) {
+      const text = (el.innerText || '').trim();
+      if (text.length > 4500 || (text.match(/point of interest/gi) || []).length > 1) break;
+      found.auroux ||= /\bAUROUX\b/i.test(text);
+      found.xauusd ||= /\bXAUUSD\b/i.test(text);
+      found.direction ||= /\b(?:1M|5M|15M|30M|1H|4H)\s*-\s*(?:BUY|SELL)\b/i.test(text);
+      found.invalidation ||= /Invalidation/i.test(text);
+      found.exit1 ||= /Exit\s*1/i.test(text);
+      found.exit2 ||= /Exit\s*2/i.test(text);
+      found.level ||= /\bLevel\b/i.test(text);
+    }
+    for (const k of Object.keys(coverage)) if (found[k]) coverage[k]++;
   }
   return {
+    field_coverage: coverage,
     path: location.pathname,
     ready_state: document.readyState,
     body_characters: body.length,
@@ -93,17 +113,21 @@ class Config:
     url: str
     profile: Path
     database: Path
-    webhook: str
+    bot_token_file: Path
+    discord_channel_id: int
     poll_seconds: float
     timeframe: str
     levels: frozenset[int]
     headless: bool
 
     @classmethod
-    def from_env(cls, *, require_webhook: bool) -> "Config":
-        webhook = os.getenv("SKTRADER_DISCORD_WEBHOOK", "").strip()
-        if require_webhook and not webhook.startswith("https://discord.com/api/webhooks/"):
-            raise ValueError("SKTRADER_DISCORD_WEBHOOK must be a Discord webhook URL")
+    def from_env(cls, *, require_discord: bool) -> "Config":
+        channel = os.getenv("SKTRADER_DISCORD_CHANNEL_ID", "").strip()
+        token_file = os.getenv("SKTRADER_DISCORD_BOT_TOKEN_FILE", "").strip()
+        if require_discord and (not channel.isascii() or not channel.isdigit() or not 15 <= len(channel) <= 22):
+            raise ValueError("SKTRADER_DISCORD_CHANNEL_ID must be a Discord channel snowflake")
+        if require_discord and not token_file:
+            raise ValueError("SKTRADER_DISCORD_BOT_TOKEN_FILE is required for watch mode")
         poll = float(os.getenv("SKTRADER_POLL_SECONDS", "5"))
         if not 1 <= poll <= 60:
             raise ValueError("Poll interval must be 1-60 seconds")
@@ -117,7 +141,8 @@ class Config:
             url=os.getenv("SKTRADER_JIFU_URL", DEFAULT_URL),
             profile=Path(os.getenv("SKTRADER_BROWSER_PROFILE", "~/.local/share/sktrader/jifu-profile")).expanduser(),
             database=Path(os.getenv("SKTRADER_DATABASE", "~/.local/share/sktrader/signals.db")).expanduser(),
-            webhook=webhook,
+            bot_token_file=Path(token_file).expanduser() if token_file else Path("/nonexistent/sktrader-discord-token"),
+            discord_channel_id=int(channel) if channel.isascii() and channel.isdigit() else 0,
             poll_seconds=poll,
             timeframe=timeframe,
             levels=levels,
@@ -146,11 +171,14 @@ def _prepare_page(page) -> None:
 
 def _read_alerts(page) -> list[Alert]:
     raw_cards: list[str] = page.evaluate(EXTRACT_CARDS_JS)
-    if not raw_cards:
-        safe_status = page.evaluate(DIAG_JS)
+    status = page.evaluate(DIAG_JS)
+    if not raw_cards or len(raw_cards) != status["poi_labels"]:
+        # Never establish a baseline or advance the durable event cursor
+        # from a partial visible alert list; that can hide future signals.
         raise SnapshotError(
-            "No complete Auroux alert cards detected; browser diagnostic: "
-            + json.dumps(safe_status, sort_keys=True)
+            f"Incomplete Auroux scan: {len(raw_cards)} complete cards versus "
+            f"{status['poi_labels']} visible labels; browser diagnostic: "
+            + json.dumps(status, sort_keys=True)
         )
     alerts: list[Alert] = []
     for text in raw_cards:
@@ -162,15 +190,39 @@ def _read_alerts(page) -> list[Alert]:
     return alerts
 
 
-def _post_discord(webhook: str, payload: dict) -> None:
+def _bot_token(path: Path) -> str:
+    """Read the existing DK Capital bot's token from a private local file.
+
+    Do not log or copy the value into .env/GitHub. The file must be owned
+    by the running collector user and inaccessible to group and others.
+    """
+    info = path.stat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or (info.st_mode & 0o077):
+        raise PermissionError("Discord bot token file must be owned by this user with mode 0600 or 0400")
+    token = path.read_text(encoding="utf-8").strip()
+    if len(token) < 20 or any(c.isspace() for c in token):
+        raise ValueError("Discord bot token file is empty or invalid")
+    return token
+
+
+def _post_discord(config: Config, payload: dict, *, event_id: int | None = None) -> None:
+    if event_id is not None:
+        # Discord deduplicates the bot's identical nonces for a few minutes.
+        # SQLite's durable queue remains the authoritative long-term record.
+        payload = {**payload, "nonce": f"sktrader-{event_id}", "enforce_nonce": True}
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(
-        webhook, data=body,
-        headers={"Content-Type": "application/json", "User-Agent": "sktrader-collector/0.1"},
+        f"https://discord.com/api/v10/channels/{config.discord_channel_id}/messages",
+        data=body,
+        headers={
+            "Authorization": "Bot " + _bot_token(config.bot_token_file),
+            "Content-Type": "application/json",
+            "User-Agent": "sktrader-collector/0.1",
+        },
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=12) as response:
-        if response.status not in (200, 204):
+        if response.status != 200:
             raise RuntimeError(f"Discord returned HTTP {response.status}")
 
 
@@ -198,14 +250,14 @@ def _send_pending(store: EventStore, config: Config) -> None:
         # Record ALL alerts, but notify Discord only for configured strategies.
         if ((config.timeframe == "ALL" or alert.timeframe == config.timeframe)
                 and alert.level in config.levels):
-            _post_discord(config.webhook, _alert_embed(event_id, observed_at, alert))
+            _post_discord(config, _alert_embed(event_id, observed_at, alert), event_id=event_id)
         store.delivered(event_id)
         LOG.info("Recorded event #%s %s %s %s (Discord filter applied)", event_id, alert.side, alert.timeframe, alert.poi)
 
 
 def _notify_health(config: Config, message: str) -> None:
     try:
-        _post_discord(config.webhook, {
+        _post_discord(config, {
             "content": "Sktrader JIFU monitor: " + message[:1300],
             "allowed_mentions": {"parse": []},
         })
@@ -266,7 +318,9 @@ def watch(config: Config) -> None:
 
     _secure_profile(config.profile)
     store = EventStore(config.database)
-    LOG.info("Starting WATCH-ONLY collector; no broker/execution permissions exist")
+    _bot_token(config.bot_token_file)  # Fail at startup if existing DK Capital credentials are unavailable.
+    LOG.info("Starting WATCH-ONLY collector; Discord bot channel=%s; no broker/execution permissions exist",
+             config.discord_channel_id)
     with sync_playwright() as playwright:
         viewport, args = browser_geometry()
         context = playwright.chromium.launch_persistent_context(
@@ -314,7 +368,7 @@ def main() -> None:
     parser.add_argument("command", choices=["login", "diagnose", "watch"])
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    config = Config.from_env(require_webhook=args.command == "watch")
+    config = Config.from_env(require_discord=args.command == "watch")
     if args.command == "login":
         login(config)
     elif args.command == "diagnose":
