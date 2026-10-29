@@ -61,7 +61,7 @@ After a successful interactive test, install the example systemd service at `dep
 | Variable | Default |
 |---|---|
 | `SKTRADER_POLL_SECONDS` | `5` |
-| `SKTRADER_TIMEFRAME` | `5M` |
+| `SKTRADER_TIMEFRAME` | `ALL` (every Auroux timeframe; individual card per signal) |
 | `SKTRADER_LEVELS` | `250,500` |
 | `SKTRADER_HEADLESS` | `true` |
 | `SKTRADER_DISCORD_CHANNEL_ID` | Existing DK Capital Discord bot destination, `1565508564775075981` |
@@ -175,3 +175,19 @@ To avoid event duplication, run exactly one Sktrader watcher at a time.
 **Parser acceptance gate:** The diagnostic reports how many mixed-scanner card boundaries are readable. A mixed feed of 10 cards with zero AUROUX XAUUSD is a valid capture, not a parser failure. Only source `AUROUX` and instrument `XAUUSD` are eligible for publication; a WOLFX/XAUUSD signal must never be forwarded as Auroux. The initial mixed-feed read establishes a baseline and does not replay historical posts. An incomplete feed or malformed new eligible Auroux signal fails closed without advancing the durable snapshot. A new Auroux card should appear in Discord after its insertion into the feed, subject to the configured timeframe and scanner-level filters.
 
 The All filter in JIFU is a **timeframe** filter, not proof that the alert feed is restricted to the selected scanner. If source filtering is supported in the JIFU UI, it can be investigated separately; don't assume it is active.
+
+## Each Auroux card is a distinct signal
+
+A 30M SELL, a 5M SELL and a 1H SELL with the same POI, invalidation,
+TP1, TP2 and 250-pip scanner level are **three independent alert cards**.
+Sktrader uses an age-independent, card-level feed fingerprint, including
+scanner, XAUUSD, direction and timeframe. It must publish **three** separate
+Discord messages when these are three new cards, not collapse them into
+one signal by price. The first observed list is a historical baseline and
+will not be reposted.
+
+Default `SKTRADER_TIMEFRAME=ALL` forwards all supported Auroux timeframes.
+An existing local `/opt/sktrader/.env` with `SKTRADER_TIMEFRAME=5M` is
+**not** changed by a `git pull`; set it to `ALL` explicitly on the VPS.
+This does not place three MT5 orders: execution is disabled and messages
+are labelled `ALERT ONLY - NO TRADE`.
