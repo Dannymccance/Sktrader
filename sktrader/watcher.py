@@ -17,6 +17,11 @@ from sktrader.core import Alert, AlertError, EventStore, SnapshotError, parse_ca
 LOG = logging.getLogger("sktrader")
 DEFAULT_URL = "https://charts.jifulive.com/jifu/dashboard"
 
+# Keep the graphical login window inside the existing MT5 VNC desktop (:152).
+# The server runs at 1280x800 and cannot be enlarged with xrandr.
+BROWSER_VIEWPORT = {"width": 1160, "height": 640}
+BROWSER_WINDOW_ARGS = ["--window-size=1200,720", "--window-position=15,15"]
+
 # The exact authenticated DOM is not yet available. This extractor climbs
 # from each visible Point of Interest label to its smallest complete card.
 # If the JIFU layout changes, fail closed rather than reading a whole sidebar.
@@ -171,7 +176,7 @@ def login(config: Config) -> None:
     _secure_profile(config.profile)
     with sync_playwright() as playwright:
         context = playwright.chromium.launch_persistent_context(
-            str(config.profile), headless=False, viewport={"width": 1600, "height": 900},
+            str(config.profile), headless=False, viewport=BROWSER_VIEWPORT, args=BROWSER_WINDOW_ARGS,
         )
         try:
             page = context.pages[0] if context.pages else context.new_page()
@@ -190,7 +195,7 @@ def watch(config: Config) -> None:
     LOG.info("Starting WATCH-ONLY collector; no broker/execution permissions exist")
     with sync_playwright() as playwright:
         context = playwright.chromium.launch_persistent_context(
-            str(config.profile), headless=config.headless, viewport={"width": 1600, "height": 900},
+            str(config.profile), headless=config.headless, viewport=BROWSER_VIEWPORT, args=BROWSER_WINDOW_ARGS,
         )
         try:
             page = context.pages[0] if context.pages else context.new_page()
