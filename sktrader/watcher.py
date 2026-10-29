@@ -68,12 +68,32 @@ DIAG_JS = r"""() => {
   const body = document.body?.innerText || '';
   const tree = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
   let poiLabels = 0;
+  const coverage = {
+    auroux: 0, xauusd: 0, direction: 0, invalidation: 0,
+    exit1: 0, exit2: 0, level: 0
+  };
   let node;
   while ((node = tree.nextNode())) {
-    if ((node.nodeValue || '').trim().toLowerCase() === 'point of interest'
-        && node.parentElement?.getClientRects().length) poiLabels++;
+    if ((node.nodeValue || '').trim().toLowerCase() !== 'point of interest'
+        || !node.parentElement?.getClientRects().length) continue;
+    poiLabels++;
+    const found = Object.fromEntries(Object.keys(coverage).map(k => [k, false]));
+    let el = node.parentElement;
+    for (let depth = 0; depth < 22 && el; depth++, el = el.parentElement) {
+      const text = (el.innerText || '').trim();
+      if (text.length > 4500 || (text.match(/point of interest/gi) || []).length > 1) break;
+      found.auroux ||= /\bAUROUX\b/i.test(text);
+      found.xauusd ||= /\bXAUUSD\b/i.test(text);
+      found.direction ||= /\b(?:1M|5M|15M|30M|1H|4H)\s*-\s*(?:BUY|SELL)\b/i.test(text);
+      found.invalidation ||= /Invalidation/i.test(text);
+      found.exit1 ||= /Exit\s*1/i.test(text);
+      found.exit2 ||= /Exit\s*2/i.test(text);
+      found.level ||= /\bLevel\b/i.test(text);
+    }
+    for (const k of Object.keys(coverage)) if (found[k]) coverage[k]++;
   }
   return {
+    field_coverage: coverage,
     path: location.pathname,
     ready_state: document.readyState,
     body_characters: body.length,
@@ -151,11 +171,14 @@ def _prepare_page(page) -> None:
 
 def _read_alerts(page) -> list[Alert]:
     raw_cards: list[str] = page.evaluate(EXTRACT_CARDS_JS)
-    if not raw_cards:
-        safe_status = page.evaluate(DIAG_JS)
+    status = page.evaluate(DIAG_JS)
+    if not raw_cards or len(raw_cards) != status["poi_labels"]:
+        # Never establish a baseline or advance the durable event cursor
+        # from a partial visible alert list; that can hide future signals.
         raise SnapshotError(
-            "No complete Auroux alert cards detected; browser diagnostic: "
-            + json.dumps(safe_status, sort_keys=True)
+            f"Incomplete Auroux scan: {len(raw_cards)} complete cards versus "
+            f"{status['poi_labels']} visible labels; browser diagnostic: "
+            + json.dumps(status, sort_keys=True)
         )
     alerts: list[Alert] = []
     for text in raw_cards:
