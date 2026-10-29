@@ -8,7 +8,7 @@ import os
 from sktrader.core import AlertError, EventStore, SnapshotError, new_prefix, parse_card
 from unittest.mock import patch
 from unittest import mock
-from sktrader.watcher import browser_geometry, _alert_embed, _read_alerts, DIAG_JS, EXTRACT_CARDS_JS, Config, _post_discord, _bot_token
+from sktrader.watcher import browser_geometry, _alert_embed, _read_alerts, DIAG_JS, EXTRACT_CARDS_JS, PROBE_CARDS_JS, Config, _post_discord, _bot_token
 
 
 BUY = """AUROUX
@@ -97,6 +97,16 @@ class SidebarScopingTests(unittest.TestCase):
         alerts = _read_alerts(Page())
         self.assertEqual(len(alerts), 2)
         self.assertEqual([a.side for a in alerts], ["BUY", "SELL"])
+
+
+class StructureProbeTests(unittest.TestCase):
+    def test_probe_is_bounded_to_sidebar_and_single_card(self):
+        self.assertIn("window.innerWidth * 0.60", PROBE_CARDS_JS)
+        self.assertIn("out.length < 15", PROBE_CARDS_JS)
+        self.assertIn("matches > 1", PROBE_CARDS_JS)
+        self.assertIn("slice(0, 650)", PROBE_CARDS_JS)
+        self.assertNotIn("outerHTML", PROBE_CARDS_JS)
+        self.assertNotIn("document.cookie", PROBE_CARDS_JS)
 
 
 class BrowserDiagnosticsTests(unittest.TestCase):

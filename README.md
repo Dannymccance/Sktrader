@@ -181,7 +181,7 @@ a baseline or advance signal history.
 
 Run `python -m sktrader diagnose` and check `document_poi_labels` (entire
 page), `excluded_chart_or_other_labels`, `poi_labels` (sidebar only),
-and the sidebar `field_coverage` counts. These contain only counts and
+and the sidebar `field_coverage` counts. The manual `diagnose` command also prints up to 15 bounded single-card text excerpts (650 characters maximum each) so that broken card DOM boundaries can be identified. These may include the displayed signal prices: review locally before sharing. These contain only counts and
 booleans, not signal data or secrets. A user interface layout change may
 require revisiting the sidebar geometric threshold; never silently fall back
 to whole-page matching. Do not enable continuous monitoring unless
