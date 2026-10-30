@@ -7,10 +7,17 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-from sktrader.recovery import HealthMonitor, login_state, private_credentials, try_login
+from sktrader.recovery import HealthMonitor, login_state, private_credentials, try_login, browser_transport_dead
 
 
 class RecoveryTests(unittest.TestCase):
+    def test_browser_crash_requires_service_restart(self):
+        with patch.dict(sys.modules, {"playwright.sync_api": types.SimpleNamespace(Error=RuntimeError)}):
+            self.assertTrue(browser_transport_dead(RuntimeError("Page.evaluate: Target crashed")))
+            self.assertTrue(browser_transport_dead(RuntimeError("TargetClosedError: Target page, context or browser has been closed")))
+            self.assertFalse(browser_transport_dead(RuntimeError("Snapshot mismatch")))
+            self.assertFalse(browser_transport_dead(ValueError("Target crashed")))
+
     def test_login_detection_does_not_guess_from_empty_page(self):
         self.assertEqual(login_state({"possible_login": True, "has_alerts_tab": False}), "login")
         self.assertEqual(login_state({"possible_login": False, "has_alerts_tab": True}), "dashboard")
