@@ -12,6 +12,8 @@ import argparse
 import json
 import math
 import os
+import re
+from datetime import datetime, timezone
 import sqlite3
 import time
 from pathlib import Path
@@ -32,6 +34,31 @@ def price_field(fields: list[dict], name: str) -> float:
     return value
 
 
+def deadline_epoch(signal: dict) -> int | None:
+    """Fail closed when an original time cannot be established.
+
+    A displayed minute age is rounded down, so conservatively assume the
+    oldest moment compatible with that display, not a fresh 180s window.
+    """
+    observed = signal.get("observed_at")
+    age = str(signal.get("relative_age", "")).strip().lower()
+    try:
+        observed_epoch = datetime.fromisoformat(observed.replace("Z", "+00:00")).timestamp()
+    except (AttributeError, ValueError, TypeError):
+        return None
+    if age == "just now":
+        elapsed = 59
+    else:
+        match = re.fullmatch(r"(\\d+|a|an) (second|minute|hour|day|week)s? ago", age)
+        if not match:
+            return None
+        quantity = 1 if match.group(1) in ("a", "an") else int(match.group(1))
+        units = {"second": 1, "minute": 60, "hour": 3600, "day": 86400, "week": 604800}
+        seconds = units[match.group(2)]
+        elapsed = quantity * seconds + (seconds - 1)
+    return int(observed_epoch - elapsed + 180)
+
+
 def export_lines(connection: sqlite3.Connection) -> list[str]:
     rows = connection.execute("SELECT id,payload FROM scanner_events ORDER BY id").fetchall()
     result: list[str] = []
@@ -47,6 +74,9 @@ def export_lines(connection: sqlite3.Connection) -> list[str]:
             poi = price_field(fields, "Point of Interest")
             sl = price_field(fields, "Invalidation")
             tp = price_field(fields, "Exit1")
+            deadline = deadline_epoch(signal)
+            if deadline is None:
+                raise ValueError("unknown issue age")
             if not ((sl < poi < tp) if side == "BUY" else (tp < poi < sl)):
                 raise ValueError("invalid price structure")
         except (KeyError, TypeError, ValueError) as exc:
