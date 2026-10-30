@@ -1,0 +1,180 @@
+"""Regression coverage for XAUUSD-only mixed-scanner Discord routing."""
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from sktrader.core import SnapshotError
+from sktrader.multi_scanners import (
+    SCANNER_CHANNELS, ScannerStore, discord_card, is_xauusd_card,
+    load_channels, parse_scanner_card, setup_channels,
+)
+from sktrader.watcher import Config, _send_scanner_pending
+
+
+def card(scanner, symbol="XAUUSD", age="2 minutes ago", timeframe="5M",
+         direction="BUY", suffix="Point of Interest 4025.50000 Invalidation 4015.50000 Exit 1 4035.50000 Exit 2 4045.50000"):
+    return f"{scanner} {age} {symbol} {timeframe} - {direction} {suffix}"
+
+
+class MultiScannerTests(unittest.TestCase):
+    def test_all_eight_sources_and_aliases(self):
+        cases = {
+            "QUANTUM": "QUANTUM",
+            "TREND WAVE": "TREND WAVE",
+            "AUROUX": "AUROUX",
+            "NEXUS": "NEXUS",
+            "SNIPERPRO": "SNIPER PRO",
+            "SNIPER PRO": "SNIPER PRO",
+            "WOLFX": "WOLF X",
+            "WOLF X": "WOLF X",
+            "HARMONICS": "HARMONICS",
+            "PRIME": "PRIME",
+        }
+        for written, canonical in cases.items():
+            with self.subTest(written=written):
+                parsed = parse_scanner_card(card(written))
+                self.assertEqual(parsed.scanner, canonical)
+                self.assertEqual(parsed.symbol, "XAUUSD")
+        self.assertEqual(set(SCANNER_CHANNELS), set(cases.values()))
+
+    def test_other_markets_are_excluded(self):
+        for symbol in ("BTCUSDT", "XAGUSD", "NAS100USD", "USDJPY", "EURJPY"):
+            self.assertFalse(is_xauusd_card(card("WOLFX", symbol=symbol)))
+        self.assertFalse(is_xauusd_card(card("PRIME", symbol="XAUUSDm")))
+
+    def test_variable_exits_and_missing_stop_are_preserved(self):
+        prime = parse_scanner_card(card("PRIME", suffix="Point of Interest 4022.50000 Zone S0"))
+        self.assertEqual(prime.fields, [
+            {"name": "Point of Interest", "value": "4022.50000"},
+            {"name": "Zone", "value": "S0"},
+        ])
+        wolf = parse_scanner_card(card(
+            "WOLFX", direction="SELL",
+            suffix="Point of Interest 4014.53000 Invalidation 4026.55000 "
+                   "Exit 1 4002.51000 Exit 2 3978.47000 Exit 3 3954.43000",
+        ))
+        self.assertEqual([f["name"] for f in wolf.fields],
+                         ["Point of Interest", "Invalidation", "Exit1", "Exit2", "Exit3"])
+        self.assertEqual([f["name"] for f in discord_card(prime)["embeds"][0]["fields"]],
+                         ["Point of Interest", "Zone"])
+
+    def test_unrecognized_xauusd_scanner_fails_not_misroutes(self):
+        with self.assertRaisesRegex(ValueError, "Unconfigured"):
+            parse_scanner_card(card("FAKEBANK"))
+        with self.assertRaisesRegex(ValueError, "Non-XAUUSD"):
+            parse_scanner_card(card("AUROUX", symbol="XAGUSD"))
+
+    def test_baseline_and_only_new_gold_cards_queued(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = ScannerStore(Path(temp) / "signals.db")
+            old = [card("NEXUS", "EURJPY"), card("WOLFX", "USDJPY"),
+                   card("HARMONICS", "BTCUSDT")]
+            self.assertEqual(store.observe(old), (0, True))
+            self.assertEqual(store.observe([card("SNIPERPRO")] + old), (1, False))
+            self.assertEqual(store.pending()[0][1].scanner, "SNIPER PRO")
+            self.assertEqual(store.observe([card("SNIPERPRO", age="3 minutes ago")] +
+                                           [card("NEXUS", "EURJPY", age="3 minutes ago"),
+                                            card("WOLFX", "USDJPY", age="3 minutes ago"),
+                                            card("HARMONICS", "BTCUSDT", age="3 minutes ago")]),
+                             (0, False))
+            self.assertEqual(len(store.pending()), 1)
+            store.conn.close()
+
+    def test_same_prices_different_scanners_are_independent(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = ScannerStore(Path(temp) / "signals.db")
+            old = [card("WOLFX", "USDCAD"), card("HARMONICS", "BTCUSDT")]
+            self.assertEqual(store.observe(old), (0, True))
+            incoming = [card("AUROUX", timeframe="30M"),
+                        card("WOLFX", timeframe="5M"),
+                        card("NEXUS", timeframe="1H")]
+            self.assertEqual(store.observe(incoming + old), (3, False))
+            self.assertEqual({signal.scanner for _, signal in store.pending()},
+                             {"AUROUX", "WOLF X", "NEXUS"})
+            store.conn.close()
+
+    def test_malformed_new_gold_preserves_snapshot(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = ScannerStore(Path(temp) / "signals.db")
+            old = [card("WOLFX", "USDCAD"), card("HARMONICS", "BTCUSDT")]
+            self.assertEqual(store.observe(old), (0, True))
+            with self.assertRaisesRegex(SnapshotError, "Unparseable"):
+                store.observe([card("FAKEBANK")] + old)
+            self.assertEqual(store.observe([card("AUROUX")] + old), (1, False))
+            store.conn.close()
+
+    def test_replay_once_and_idempotency(self):
+        with tempfile.TemporaryDirectory() as temp:
+            filename = Path(temp) / "signals.db"
+            store = ScannerStore(filename)
+            latest = [card("AUROUX"), card("WOLFX", "USDJPY")]
+            archive = latest + [card("PRIME", suffix="Point of Interest 4000 Zone S0"),
+                                card("HARMONICS", symbol="BTCUSDT")]
+            self.assertEqual(store.replay_once(archive, newest=latest), (2, False))
+            self.assertEqual(len(store.pending()), 2)
+            self.assertEqual(store.observe(latest), (0, False))
+            store.conn.close()
+            again = ScannerStore(filename)
+            self.assertEqual(again.replay_once(archive, newest=latest), (0, True))
+            again.conn.close()
+
+    def test_channel_map_enforces_all_distinct_and_existing_auroux_id(self):
+        channel = 1565508564775075981
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "channels.json"
+            with self.assertRaisesRegex(ValueError, "setup-channels"):
+                load_channels(path, channel)
+            data = {name: str(1600000000000000000 + i + 1)
+                    for i, name in enumerate(SCANNER_CHANNELS)}
+            data["AUROUX"] = str(channel)
+            path.write_text(json.dumps(data))
+            self.assertEqual(load_channels(path, channel)["AUROUX"], channel)
+            data["NEXUS"] = str(channel)
+            path.write_text(json.dumps(data))
+            with self.assertRaisesRegex(ValueError, "overlapping"):
+                load_channels(path, channel)
+
+    def test_setup_creates_seven_new_channels_and_reuses_auroux(self):
+        channel = 1565508564775075981
+        requests = []
+        next_id = iter(str(1600000000000000000 + i) for i in range(1, 8))
+        def discord_request(_token, method, route, payload=None):
+            requests.append((method, route, payload))
+            if route == f"/channels/{channel}":
+                return {"guild_id": "1200000000000000000",
+                        "parent_id": "1300000000000000000"}
+            if method == "GET":
+                return []
+            return {"id": next(next_id)}
+        with tempfile.TemporaryDirectory() as tmp:
+            mapping = Path(tmp) / "channels.json"
+            with patch("sktrader.multi_scanners._discord_json", side_effect=discord_request):
+                channels = setup_channels("fake-token", channel, mapping)
+            self.assertEqual(channels["AUROUX"], channel)
+            self.assertEqual(len(channels), 8)
+            self.assertEqual(sum(x[0] == "POST" for x in requests), 7)
+            self.assertEqual(load_channels(mapping, channel), channels)
+            self.assertEqual(mapping.stat().st_mode & 0o077, 0)
+
+    def test_delivery_routes_by_scanner_without_crossposting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ScannerStore(Path(tmp) / "signals.db")
+            old = [card("WOLFX", "USDCAD"), card("HARMONICS", "BTCUSDT")]
+            store.observe(old)
+            store.observe([card("WOLFX"), card("AUROUX")] + old)
+            channels = {key: 1600000000000000000 + i
+                        for i, key in enumerate(SCANNER_CHANNELS)}
+            config = Config.from_env(require_discord=False)
+            with patch("sktrader.watcher._post_discord") as sending:
+                _send_scanner_pending(store, config, channels)
+            self.assertEqual(sending.call_count, 2)
+            ids = {call.kwargs["channel_id"] for call in sending.call_args_list}
+            self.assertEqual(ids, {channels["WOLF X"], channels["AUROUX"]})
+            self.assertEqual(store.pending(), [])
+            store.conn.close()
+
+
+if __name__ == "__main__":
+    unittest.main()
