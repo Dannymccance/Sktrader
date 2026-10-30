@@ -87,8 +87,8 @@ def main() -> None:
     parser.add_argument("--follow", action="store_true")
     parser.add_argument("--interval", type=float, default=0.1)
     args = parser.parse_args()
-    if args.interval < 0.5:
-        parser.error("--interval must be >= 0.5")
+    if args.interval < 0.05:
+        parser.error("--interval must be >= 0.05")
     previous_id = -1
     while True:
         newest = latest_event_id(args.database)
