@@ -8,7 +8,7 @@ import os
 from sktrader.core import AlertError, EventStore, SnapshotError, auroux_xauusd_card, feed_fingerprint, merge_history_page, new_prefix, parse_card
 from unittest.mock import patch
 from unittest import mock
-from sktrader.watcher import browser_geometry, _alert_embed, _read_alerts, _read_feed_cards, _collect_replay_history, DIAG_JS, EXTRACT_CARDS_JS, PROBE_CARDS_JS, SCROLL_ALERTS_JS, Config, _post_discord, _bot_token, _one_browser_at_a_time
+from sktrader.watcher import browser_geometry, _alert_embed, _read_alerts, _read_feed_cards, _collect_replay_history, _prepare_page, _sidebar_scanner_state, SIDEBAR_SCANNER_STATE_JS, DIAG_JS, EXTRACT_CARDS_JS, PROBE_CARDS_JS, SCROLL_ALERTS_JS, Config, _post_discord, _bot_token, _one_browser_at_a_time
 
 
 BUY = """AUROUX
@@ -113,6 +113,73 @@ class BrowserSizeTests(unittest.TestCase):
         with patch.dict("os.environ", {"SKTRADER_VIEWPORT_WIDTH": "6000"}):
             with self.assertRaises(ValueError):
                 browser_geometry()
+
+
+class StableAurouxSidebarTests(unittest.TestCase):
+    def test_scanner_selector_state_scopes_to_right_header(self):
+        self.assertIn("window.innerWidth * 0.60", SIDEBAR_SCANNER_STATE_JS)
+        self.assertIn("window.innerHeight * 0.35", SIDEBAR_SCANNER_STATE_JS)
+        self.assertIn("foundUnselected ? 'unselected'", SIDEBAR_SCANNER_STATE_JS)
+        self.assertNotIn("Point of Interest", SIDEBAR_SCANNER_STATE_JS)
+
+    def test_scanner_state_is_observed_without_changing_page(self):
+        class Page:
+            def __init__(self, value):
+                self.value = value
+            def evaluate(self, script):
+                self_outer.assertEqual(script, SIDEBAR_SCANNER_STATE_JS)
+                return self.value
+
+        self_outer = self
+        for status in ("auroux", "unselected", "unknown"):
+            self.assertEqual(_sidebar_scanner_state(Page(status)), status)
+        with self.assertRaises(SnapshotError):
+            _sidebar_scanner_state(Page("mixed"))
+
+    def test_prepare_does_not_click_or_reload_ui(self):
+        class Page:
+            def __init__(self):
+                self.waited = False
+            def wait_for_timeout(self, ms):
+                self.waited = ms > 0
+            def get_by_text(self, *args, **kwargs):
+                raise AssertionError("Unscoped click must never occur")
+            def reload(self, **kwargs):
+                raise AssertionError("Reload must never occur")
+
+        page = Page()
+        _prepare_page(page)
+        self.assertTrue(page.waited)
+
+    def test_selected_auroux_feed_uses_own_cursor(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = EventStore(Path(folder) / "signals.db")
+            mixed = [HARMONICS, WOLFX, PRIME]
+            self.assertEqual(store.observe_feed(mixed), (0, True))
+            self.assertEqual(store.observe_auroux_sidebar([BUY, SELL]), (0, True))
+            self.assertEqual(store.observe_auroux_sidebar(
+                [BUY500, BUY, SELL]), (1, False))
+            self.assertEqual([alert.level for _, _, alert in store.pending()], [500])
+            store.conn.close()
+
+    def test_refuses_mixed_feed_without_advancing_auroux_cursor(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = EventStore(Path(folder) / "signals.db")
+            self.assertEqual(store.observe_auroux_sidebar([BUY, SELL]), (0, True))
+            with self.assertRaisesRegex(SnapshotError, "mixed sources"):
+                store.observe_auroux_sidebar([HARMONICS, BUY, SELL])
+            self.assertEqual(store.observe_auroux_sidebar(
+                [BUY500, BUY, SELL]), (1, False))
+            store.conn.close()
+
+    def test_preserves_distinct_auroux_cards_with_same_price(self):
+        cards = IndependentAurouxTimeframeTests._same_prices_three_frames()
+        with tempfile.TemporaryDirectory() as folder:
+            store = EventStore(Path(folder) / "signals.db")
+            self.assertEqual(store.observe_auroux_sidebar(cards), (0, True))
+            self.assertEqual(store.observe_auroux_sidebar([cards[0]] + cards), (1, False))
+            self.assertEqual(len(store.pending()), 1)
+            store.conn.close()
 
 
 class SidebarScopingTests(unittest.TestCase):

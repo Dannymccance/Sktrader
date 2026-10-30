@@ -185,6 +185,12 @@ class EventStore:
             id INTEGER PRIMARY KEY CHECK (id = 1),
             fingerprints TEXT NOT NULL
         )""")
+        # Dedicated cursor for the AUROUX-only sidebar. Existing mixed-feed
+        # snapshots must never be compared against the newly filtered list.
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS auroux_snapshot (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            fingerprints TEXT NOT NULL
+        )""")
         # One manual backfill for the complete currently loaded Alerts sidebar.
         # The same replay batch can be safely resumed if sending is interrupted.
         self.conn.execute("""CREATE TABLE IF NOT EXISTS visible_replay_batch (
@@ -259,6 +265,44 @@ class EventStore:
                 (json.dumps(current),),
             )
         return len(eligible), previous is None
+
+    def observe_auroux_sidebar(self, cards: list[str]) -> tuple[int, bool]:
+        """Observe the selected AUROUX sidebar, never a mixed scanner view.
+
+        A reset of JIFU's source dropdown may replace every item in the list.
+        This method refuses a mixed-source page rather than advancing a cursor
+        or silently missing new Auroux signals. Uses a separate snapshot table
+        to avoid comparison with earlier mixed-scanner baselines.
+        """
+        if not cards:
+            raise SnapshotError("No AUROUX cards in selected sidebar")
+        if any(not auroux_xauusd_card(card) for card in cards):
+            raise SnapshotError("AUROUX selector does not match alert feed; refusing mixed sources")
+        current = [feed_fingerprint(card) for card in cards]
+        row = self.conn.execute(
+            "SELECT fingerprints FROM auroux_snapshot WHERE id=1"
+        ).fetchone()
+        previous = json.loads(row[0]) if row else None
+        indices = new_prefix(previous, current) if previous is not None else []
+        new_alerts = []
+        for index in reversed(indices):
+            try:
+                new_alerts.append(parse_card(cards[index]))
+            except AlertError as exc:
+                raise SnapshotError(f"Unparseable AUROUX sidebar card: {exc}") from exc
+        now = datetime.now(timezone.utc).isoformat()
+        with self.conn:
+            for alert in new_alerts:
+                self.conn.execute(
+                    "INSERT INTO events(observed_at,payload) VALUES (?,?)",
+                    (now, json.dumps(asdict(alert), sort_keys=True)),
+                )
+            self.conn.execute(
+                "INSERT INTO auroux_snapshot(id,fingerprints) VALUES(1,?) "
+                "ON CONFLICT(id) DO UPDATE SET fingerprints=excluded.fingerprints",
+                (json.dumps(current),),
+            )
+        return len(new_alerts), previous is None
 
     def replay_visible_once(
         self, cards: list[str], *, feed_cursor: list[str] | None = None,
