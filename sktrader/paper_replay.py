@@ -164,6 +164,28 @@ class PaperReplay:
                                 now.isoformat())
         return len(rows)
 
+    def reconcile_audit(self):
+        """Recover paper fills/closes after a crash between ledger and outbox writes."""
+        with self.engine.db:
+            for eid,scanner,state,entry_time,entry,lots,exit_time,exit_price,net in self.engine.db.execute(
+                "SELECT event_id,scanner,state,entry_time,entry_price,lots,"
+                "exit_time,exit_price,net_pnl FROM paper_signals ORDER BY event_id"
+            ).fetchall():
+                if entry_time:
+                    self._audit(eid,scanner,"PAPER_FILLED",
+                                {"entry":entry,"lots":lots,"market_time":entry_time,
+                                 "state":"OPEN","simulation":True},
+                                entry_time)
+                if state in ("TP1","SL") and exit_time:
+                    self._audit(eid,scanner,"PAPER_CLOSED_"+state,
+                                {"entry":entry,"exit":exit_price,"lots":lots,
+                                 "net_pnl_usd":net,"market_time":exit_time,
+                                 "simulation":True},
+                                exit_time)
+                if state == "EXPIRED":
+                    self._audit(eid,scanner,"ORDER_EXPIRED",
+                                {"state":"EXPIRED"},datetime.now(timezone.utc).isoformat())
+
     def pending_notifications(self):
         return list(self.engine.db.execute(
             "SELECT a.id,a.event_id,a.scanner,a.kind,a.recorded_at,a.detail "
@@ -218,6 +240,7 @@ def main():
         try:
             feed.ingest(args.common)
             replay.tick()
+            replay.reconcile_audit()
             for event in replay.pending_notifications():
                 notify_discord(args.channel,token,event)
                 replay.mark_sent(event[0])
