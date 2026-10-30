@@ -1,0 +1,19 @@
+[Unit]
+Description=Dedicated JIFU Xvfb display :155 (isolated from MT5)
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=dkmt5c
+Group=dkmt5c
+Environment=HOME=/var/lib/dkcapital-mt5-3
+ExecStart=/bin/bash /opt/sktrader/deploy/keep-display.sh
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
