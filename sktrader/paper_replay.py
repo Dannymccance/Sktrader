@@ -59,6 +59,9 @@ class PaperReplay:
             if self._state("signal_cursor") is None:
                 cursor = self.signals.execute("SELECT COALESCE(MAX(id),0) FROM scanner_events").fetchone()[0] if bootstrap else 0
                 self._set_state("signal_cursor", cursor)
+            if self._state("source_delivery_cursor") is None:
+                baseline=self.signals.execute("SELECT COALESCE(MAX(id),0) FROM scanner_events").fetchone()[0] if bootstrap else 0
+                self._set_state("source_delivery_cursor", baseline)
             if self._state("tick_cursor") is None:
                 cursor = self.market.execute("SELECT COALESCE(MAX(rowid),0) FROM feed_ticks").fetchone()[0] if bootstrap else 0
                 self._set_state("tick_cursor", cursor)
@@ -112,6 +115,21 @@ class PaperReplay:
                                     {"status":"paper only, awaiting executable bid/ask"},
                                     now.isoformat())
                 self._set_state("signal_cursor",eid)
+        # A successful source-channel Discord POST is independently recorded
+        # by ScannerStore.delivered(). Do not mistake detection for delivery.
+        for eid,delivered,payload in self.signals.execute(
+            "SELECT id,delivered_at,payload FROM scanner_events WHERE id>? "
+            "ORDER BY id LIMIT 200", (self._state("source_delivery_cursor"),)):
+            if not delivered:
+                break
+            scanner=json.loads(payload).get("scanner")
+            with self.engine.db:
+                if scanner in SCANNERS:
+                    self._audit(eid,scanner,"SOURCE_DISCORD_DELIVERED",
+                                {"delivered_at":delivered,
+                                 "evidence":"Sktrader source watcher acknowledged successful Discord HTTP response"},
+                                delivered)
+                self._set_state("source_delivery_cursor",eid)
         # Source feed is trusted only for this demo profile. Paper calculations use
         # USD XAUUSD quote/contract conventions, NOT the GBP account tick_value.
         ident=self.market.execute("SELECT login,mode,currency,symbol,contract_size,generated_at "

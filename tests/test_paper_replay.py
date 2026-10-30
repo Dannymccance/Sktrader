@@ -72,6 +72,23 @@ class ReplayTests(unittest.TestCase):
         self.assertEqual(p.engine.snapshot()["NEXUS"]["open_positions"],1)
         p.engine.db.close();p.signals.close();p.market.close()
 
+    def test_source_delivery_has_separate_discord_acknowledgment(self):
+        p=PaperReplay(self.signal,self.market,self.paper)
+        self.add()
+        p.tick(now="2026-10-30T21:50:01Z")
+        self.assertNotIn("SOURCE_DISCORD_DELIVERED",
+                         [e[3] for e in p.pending_notifications()])
+        with sqlite3.connect(self.signal) as db:
+            db.execute("UPDATE scanner_events SET delivered_at=? WHERE id=1",
+                       ("2026-10-30T21:50:02+00:00",))
+        p.tick(now="2026-10-30T21:50:03Z")
+        self.assertIn("SOURCE_DISCORD_DELIVERED",
+                      [e[3] for e in p.pending_notifications()])
+        p.tick(now="2026-10-30T21:50:03Z")
+        self.assertEqual([e[3] for e in p.pending_notifications()].count(
+            "SOURCE_DISCORD_DELIVERED"),1)
+        p.engine.db.close();p.signals.close();p.market.close()
+
     def test_old_signal_records_received_but_not_pending(self):
         p=PaperReplay(self.signal,self.market,self.paper)
         self.add(age="5 minutes ago")
