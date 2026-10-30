@@ -172,6 +172,42 @@ class BrokerStore:
                             "color":3066993}],
                 "allowed_mentions":{"parse":[]}}
 
+    def weekly_summary(self, now=None):
+        """GBP broker deal totals for the currently open ISO week.
+
+        The seven-day MQL exporter lookback makes this a provisional weekly
+        view until long-term deal reconciliation is commissioned.
+        """
+        now=datetime.now(timezone.utc) if now is None else now
+        year,week,_=now.isocalendar()
+        deals=self.db.execute(
+            "SELECT entry,time_msc,profit,commission,swap,fee FROM demo_deals "
+            "WHERE magic=? AND symbol LIKE 'XAUUSD%'",
+            (self.auroux_magic,)).fetchall()
+        filtered=[]
+        for entry,stamp,profit,commission,swap,fee in deals:
+            if datetime.fromtimestamp(stamp/1000,timezone.utc).isocalendar()[:2] == (year,week):
+                filtered.append((entry,*map(amount,(profit,commission,swap,fee))))
+        gross=sum((d[1] for d in filtered),Decimal("0"))
+        costs=sum((sum(d[2:]) for d in filtered),Decimal("0"))
+        exits=[d for d in filtered if d[0] in (1,2,3)]
+        return {"year":year,"week":week,"deals":len(filtered),
+                "closing_deal_segments":len(exits),
+                "gross_gbp":gross,"costs_gbp":costs,
+                "net_gbp":gross+costs}
+
+    def weekly_embed(self, now=None):
+        s=self.weekly_summary(now)
+        return {"embeds":[{"title":f"AUROUX Demo | Week {s['year']}-W{s['week']:02d} (BROKER DEALS)",
+                           "description":(f"GBP gross realized: £{s['gross_gbp']:,.2f}\\n"
+                                          f"Commission/swap/fees: £{s['costs_gbp']:,.2f}\\n"
+                                          f"Net from exported deal records: **£{s['net_gbp']:,.2f}**\\n"
+                                          f"Deals: {s['deals']} | Closing deal segments: {s['closing_deal_segments']}\\n"
+                                          "Provisional: MT5 exporter includes 7 days of deal history; "
+                                          "not a complete independent trade reconciliation."),
+                           "color":3066993}],
+                "allowed_mentions":{"parse":[]}}
+
     def pending(self):
         return list(self.db.execute(
             "SELECT n.deal_ticket,n.kind,d.symbol,d.volume,d.price,d.profit,"
@@ -213,16 +249,21 @@ def run():
     p.add_argument("--dashboard-channel",required=True)
     p.add_argument("--confirmations-channel",required=True)
     p.add_argument("--results-channel",required=True)
+    p.add_argument("--weekly-channel",default="")
+    p.add_argument("--alerts-channel",default="")
     args=p.parse_args()
     import stat
     if any(not x.isdigit() or len(x)<15 for x in
            (args.dashboard_channel,args.confirmations_channel,args.results_channel)):
+        p.error("exact Discord destination IDs required")
+    if any(x and (not x.isdigit() or len(x)<15) for x in (args.weekly_channel,args.alerts_channel))
         p.error("exact Discord destination IDs required")
     if args.token_file.stat().st_mode & (stat.S_IRWXG|stat.S_IRWXO):
         p.error("bot token file must be owner-only")
     token=args.token_file.read_text().strip()
     store=BrokerStore(args.database,expected_login=args.login,expected_server=args.server)
     last=0
+    last_weekly=0
     while True:
         try:
             store.ingest(args.common)
@@ -250,6 +291,21 @@ def run():
                     store.db.execute("INSERT INTO demo_meta(key,value) VALUES('dashboard_message_id',?) "
                                      "ON CONFLICT(key) DO UPDATE SET value=excluded.value",(new_mid,))
                 last=time.monotonic()
+            if args.weekly_channel and time.monotonic()-last_weekly>600:
+                week=store.weekly_summary()
+                key=f"weekly_message_{week['year']}_{week['week']}"
+                row=store.db.execute("SELECT value FROM demo_meta WHERE key=?",(key,)).fetchone()
+                mid=row[0] if row else None
+                try:
+                    new_mid=send_discord(token,args.weekly_channel,store.weekly_embed(),message_id=mid)
+                except urllib.error.HTTPError as e:
+                    if e.code!=404 or not mid:
+                        raise
+                    new_mid=send_discord(token,args.weekly_channel,store.weekly_embed())
+                with store.db:
+                    store.db.execute("INSERT INTO demo_meta(key,value) VALUES (?,?) "
+                                     "ON CONFLICT(key) DO UPDATE SET value=excluded.value",(key,new_mid))
+                last_weekly=time.monotonic()
         except (OSError,ValueError,RuntimeError,sqlite3.Error,urllib.error.URLError) as e:
             print("broker reporting paused:",str(e)[:240],flush=True)
         time.sleep(2)
