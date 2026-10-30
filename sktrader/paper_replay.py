@@ -50,9 +50,11 @@ class PaperReplay:
               detail TEXT NOT NULL,
               UNIQUE(event_id,kind));
             CREATE TABLE IF NOT EXISTS discord_outbox(
-              audit_id INTEGER PRIMARY KEY, sent_at TEXT,
+              audit_id INTEGER PRIMARY KEY, sent_at TEXT, message_id TEXT,
               FOREIGN KEY(audit_id) REFERENCES paper_audit(id));
         """)
+        if "message_id" not in [x[1] for x in self.engine.db.execute("PRAGMA table_info(discord_outbox)")]:
+            self.engine.db.execute("ALTER TABLE discord_outbox ADD COLUMN message_id TEXT")
         with self.engine.db:
             if self._state("signal_cursor") is None:
                 cursor = self.signals.execute("SELECT COALESCE(MAX(id),0) FROM scanner_events").fetchone()[0] if bootstrap else 0
@@ -192,10 +194,12 @@ class PaperReplay:
             "FROM paper_audit a JOIN discord_outbox o ON o.audit_id=a.id "
             "WHERE o.sent_at IS NULL ORDER BY a.id LIMIT 100"))
 
-    def mark_sent(self, audit_id):
+    def mark_sent(self, audit_id, message_id):
+        if not str(message_id).isdigit():
+            raise ValueError("Discord message id missing")
         with self.engine.db:
-            self.engine.db.execute("UPDATE discord_outbox SET sent_at=? WHERE audit_id=?",
-                                   (datetime.now(timezone.utc).isoformat(),audit_id))
+            self.engine.db.execute("UPDATE discord_outbox SET sent_at=?,message_id=? WHERE audit_id=?",
+                                   (datetime.now(timezone.utc).isoformat(),str(message_id),audit_id))
 
 
 def notify_discord(channel, token, event):
@@ -213,6 +217,10 @@ def notify_discord(channel, token, event):
     with urllib.request.urlopen(req,timeout=12) as response:
         if response.status != 200:
             raise RuntimeError(f"Discord response {response.status}")
+        message=json.load(response)
+        if not str(message.get("id","")).isdigit():
+            raise RuntimeError("Discord did not acknowledge message id")
+        return message["id"]
 
 
 def main():
@@ -242,8 +250,8 @@ def main():
             replay.tick()
             replay.reconcile_audit()
             for event in replay.pending_notifications():
-                notify_discord(args.channel,token,event)
-                replay.mark_sent(event[0])
+                message_id=notify_discord(args.channel,token,event)
+                replay.mark_sent(event[0],message_id)
             if time.monotonic()-last_dashboard > 60:
                 dashboard.publish(token)
                 last_dashboard=time.monotonic()
