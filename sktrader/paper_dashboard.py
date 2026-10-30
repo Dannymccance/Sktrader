@@ -51,17 +51,17 @@ def dashboard(ledger: sqlite3.Connection):
     for a in accounts:
         win_rate = f"{100*a['wins']/(a['wins']+a['losses']):.1f}%" if a["wins"]+a["losses"] else "N/A"
         line = (f"Balance: **${a['balance']:,.2f}** | "
-                f"Realized: ${a['realized']:,.2f}\\n"
+                f"Realized: ${a['realized']:,.2f}\n"
                 f"Closed: {a['wins']+a['losses']} | W: {a['wins']} | L: {a['losses']} "
-                f"| WR: {win_rate}\\n"
-                f"Weekly realized: ${a['weekly']:,.2f}\\n"
+                f"| WR: {win_rate}\n"
+                f"Weekly realized: ${a['weekly']:,.2f}\n"
                 f"Pending: {a['pending']} | Open: {len(a['open'])}")
         if quote_fresh:
-            line += f"\\n**Indicative equity: ${a['balance']+a['unrealized']:,.2f}** | Floating: ${a['unrealized']:,.2f}"
+            line += f"\n**Indicative equity: ${a['balance']+a['unrealized']:,.2f}** | Floating: ${a['unrealized']:,.2f}"
         else:
-            line += "\\nEquity: N/A (quote missing or stale)"
+            line += "\nEquity: N/A (quote missing or stale)"
         for eid,side,entry,sl,tp,lots in a["open"][:3]:
-            line += f"\\n#{eid} {side} {lots} @ {entry} | SL {sl} | TP1 {tp}"
+            line += f"\n#{eid} {side} {lots} @ {entry} | SL {sl} | TP1 {tp}"
         fields.append({"name":a["scanner"],"value":line[:1024],"inline":False})
     return {"embeds":[{"title":"DK Capital | Paper Portfolios (SIMULATED)",
                         "description":"Five independent USD virtual books, each started at $1,000. "
