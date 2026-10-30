@@ -227,8 +227,6 @@ class Config:
     bot_token_file: Path
     discord_channel_id: int
     poll_seconds: float
-    timeframe: str
-    levels: frozenset[int]
     headless: bool
 
     @classmethod
@@ -242,14 +240,6 @@ class Config:
         poll = float(os.getenv("SKTRADER_POLL_SECONDS", "5"))
         if not 1 <= poll <= 60:
             raise ValueError("Poll interval must be 1-60 seconds")
-        # Each newly published Auroux card is a separate signal, even when prices match.
-        # All supported chart timeframes are eligible unless explicitly filtered.
-        timeframe = os.getenv("SKTRADER_TIMEFRAME", "ALL").strip().upper()
-        if timeframe not in {"ALL", "1M", "5M", "15M", "30M", "1H", "4H"}:
-            raise ValueError("Unsupported timeframe")
-        levels = frozenset(int(p.strip()) for p in os.getenv("SKTRADER_LEVELS", "250,500").split(","))
-        if not levels or any(level <= 0 for level in levels):
-            raise ValueError("Invalid scanner levels")
         return cls(
             url=os.getenv("SKTRADER_JIFU_URL", DEFAULT_URL),
             profile=Path(os.getenv("SKTRADER_BROWSER_PROFILE", "~/.local/share/sktrader/jifu-profile")).expanduser(),
@@ -257,8 +247,6 @@ class Config:
             bot_token_file=Path(token_file).expanduser() if token_file else Path("/nonexistent/sktrader-discord-token"),
             discord_channel_id=int(channel) if channel.isascii() and channel.isdigit() else 0,
             poll_seconds=poll,
-            timeframe=timeframe,
-            levels=levels,
             headless=os.getenv("SKTRADER_HEADLESS", "true").strip().lower() in {"true", "1", "yes"},
         )
 
@@ -366,23 +354,24 @@ def _post_discord(config: Config, payload: dict, *, event_id: int | None = None)
 
 
 def _alert_embed(event_id: int, observed_at: str, alert: Alert, *, historical: bool = False) -> dict:
+    """Mirror the JIFU Auroux card without commentary, metrics or extra notices.
+
+    event_id/observed_at/historical are retained for outbox compatibility but
+    deliberately not shown in Discord: the user requested only the signal.
+    The visible JIFU age is kept as part of the source card, not a send-time.
+    """
     return {
         "embeds": [{
-            "title": f"{'HISTORICAL REPLAY | ' if historical else ''}AUROUX | {alert.symbol} | {alert.timeframe} {alert.side}",
+            "title": "AUROUX",
+            "description": f"{alert.relative_age}\n\n**{alert.symbol}**\n**{alert.timeframe} - {alert.side}**",
             "color": 0x22C55E if alert.side == "BUY" else 0xEF4444,
             "fields": [
-                {"name": "Point of Interest", "value": alert.poi, "inline": True},
-                {"name": "Invalidation", "value": alert.invalidation, "inline": True},
-                {"name": "TP1", "value": alert.tp1, "inline": True},
-                {"name": "TP2", "value": alert.tp2, "inline": True},
-                {"name": "Scanner level", "value": f"{alert.level} pips", "inline": True},
-                {"name": "JIFU display age", "value": alert.relative_age, "inline": True},
+                {"name": "Point of Interest", "value": alert.poi, "inline": False},
+                {"name": "Invalidation", "value": alert.invalidation, "inline": False},
+                {"name": "Exit1", "value": alert.tp1, "inline": False},
+                {"name": "Exit2", "value": alert.tp2, "inline": False},
+                {"name": "Level", "value": f"{alert.level} pips", "inline": False},
             ],
-            "footer": {"text": (
-                f"Collector event #{event_id} | observed {observed_at} | "
-                + ("HISTORICAL - NOT A NEW SIGNAL | " if historical else "")
-                + "ALERT ONLY - NO TRADE"
-            )},
         }],
         "allowed_mentions": {"parse": []},
     }
@@ -390,29 +379,23 @@ def _alert_embed(event_id: int, observed_at: str, alert: Alert, *, historical: b
 
 def _send_pending(store: EventStore, config: Config) -> None:
     for event_id, observed_at, alert in store.pending():
-        # Record ALL alerts, but notify Discord only for configured strategies.
-        if ((config.timeframe == "ALL" or alert.timeframe == config.timeframe)
-                and alert.level in config.levels):
-            _post_discord(
-                config,
-                _alert_embed(
-                    event_id, observed_at, alert,
-                    historical=store.is_visible_replay_event(event_id),
-                ),
-                event_id=event_id,
-            )
+        # Every valid AUROUX XAUUSD card is delivered. No timeframe or
+        # range filters. Outbox already excludes all other scanners.
+        _post_discord(
+            config,
+            _alert_embed(
+                event_id, observed_at, alert,
+                historical=store.is_visible_replay_event(event_id),
+            ),
+            event_id=event_id,
+        )
         store.delivered(event_id)
-        LOG.info("Recorded event #%s %s %s %s (Discord filter applied)", event_id, alert.side, alert.timeframe, alert.poi)
+        LOG.info("Delivered Auroux signal #%s: %s %s %s", event_id, alert.side, alert.timeframe, alert.poi)
 
 
 def _notify_health(config: Config, message: str) -> None:
-    try:
-        _post_discord(config, {
-            "content": "Sktrader JIFU monitor: " + message[:1300],
-            "allowed_mentions": {"parse": []},
-        })
-    except (OSError, urllib.error.HTTPError, RuntimeError) as exc:
-        LOG.warning("Health notification failed: %s", type(exc).__name__)
+    """Diagnostics stay in local logs: the target Discord channel is signals only."""
+    LOG.error("JIFU monitor health: %s", message[:1300])
 
 
 def login(config: Config) -> None:
@@ -535,16 +518,14 @@ def replay_visible(config: Config) -> None:
                     "no historical replay batch has been queued."
                 )
             count, already_run = store.replay_visible_once(
-                cards, timeframe=config.timeframe, levels=config.levels,
-                feed_cursor=latest,
+                cards, feed_cursor=latest,
             )
             if already_run:
                 print("Historical Auroux replay batch was already queued; no new replay scheduled.")
             elif count == 0:
                 print(
                     f"Found {len(cards)} JIFU cards, but zero AUROUX XAUUSD "
-                    "cards matching the configured timeframe and levels. "
-                    "No historical alerts sent; replay remains available."
+                    "cards. No historical alerts sent; replay remains available."
                 )
             else:
                 print(
