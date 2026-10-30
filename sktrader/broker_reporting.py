@@ -264,6 +264,7 @@ def run():
     store=BrokerStore(args.database,expected_login=args.login,expected_server=args.server)
     last=0
     last_weekly=0
+    was_healthy=True
     while True:
         try:
             store.ingest(args.common)
@@ -306,8 +307,21 @@ def run():
                     store.db.execute("INSERT INTO demo_meta(key,value) VALUES (?,?) "
                                      "ON CONFLICT(key) DO UPDATE SET value=excluded.value",(key,new_mid))
                 last_weekly=time.monotonic()
+            if not was_healthy and args.alerts_channel:
+                send_discord(token,args.alerts_channel,
+                             {"content":"[DK Capital AUROUX DEMO] BROKER REPORTING RECOVERED: verified broker telemetry and Discord posting resumed.",
+                              "allowed_mentions":{"parse":[]}})
+            was_healthy=True
         except (OSError,ValueError,RuntimeError,sqlite3.Error,urllib.error.URLError) as e:
             print("broker reporting paused:",str(e)[:240],flush=True)
+            if was_healthy and args.alerts_channel:
+                try:
+                    send_discord(token,args.alerts_channel,
+                                 {"content":"[DK Capital AUROUX DEMO] BROKER REPORTING UNAVAILABLE. Do not treat the previous dashboard snapshot as current. Error: "+str(e)[:220],
+                                  "allowed_mentions":{"parse":[]}})
+                except (OSError,ValueError,RuntimeError,urllib.error.URLError) as alert_error:
+                    print("Discord health alert failed:",str(alert_error)[:180],flush=True)
+            was_healthy=False
         time.sleep(2)
 
 
