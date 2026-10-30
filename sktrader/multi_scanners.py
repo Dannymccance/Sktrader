@@ -103,7 +103,7 @@ def _approximate_source_time(age: str, observed: datetime) -> int | None:
     """JIFU provides relative age, not an exact issuance timestamp."""
     if age.lower() == "just now":
         return int(observed.timestamp())
-    match = re.fullmatch(r"(\\d+|a|an) (second|minute|hour|day|week)s? ago", age.lower())
+    match = re.fullmatch(r"(\d+|a|an) (second|minute|hour|day|week)s? ago", age.lower())
     if not match:
         return None
     quantity = 1 if match.group(1) in {"a", "an"} else int(match.group(1))
@@ -121,12 +121,12 @@ def discord_card(signal: ScannerSignal, *, observed_at: str | None = None) -> di
         observed = observed.astimezone(timezone.utc)
         issued = _approximate_source_time(signal.relative_age, observed)
         if issued is not None:
-            timing += f"\\n**Approx. JIFU time:** <t:{issued}:F> (estimated from relative age)"
-        timing += f"\\n**Detected by Sktrader:** <t:{int(observed.timestamp())}:F>"
+            timing += f"\n**Approx. JIFU time:** <t:{issued}:F> (estimated from relative age)"
+        timing += f"\n**Detected by Sktrader:** <t:{int(observed.timestamp())}:F>"
     return {
         "embeds": [{
             "title": signal.scanner,
-            "description": f"{timing}\\n\\n**{signal.symbol}**\\n**{signal.timeframe} - {signal.side}**",
+            "description": f"{timing}\n\n**{signal.symbol}**\n**{signal.timeframe} - {signal.side}**",
             "color": 0x22C55E if signal.side == "BUY" else 0xEF4444,
             "fields": [{**field, "inline": False} for field in signal.fields],
         }],
