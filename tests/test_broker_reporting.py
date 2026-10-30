@@ -55,6 +55,13 @@ class BrokerTelemetryTests(unittest.TestCase):
         self.store.confirmed(7777,"123456789012345678")
         self.assertEqual(self.store.pending(),[])
 
+    def test_weekly_broker_costs_from_confirmed_deals(self):
+        from datetime import datetime, timezone
+        self.store.ingest(self.root,now=1793397010)
+        week=self.store.weekly_summary(datetime.fromtimestamp(1793397010,timezone.utc))
+        self.assertEqual(week["deals"],1)
+        self.assertEqual(str(week["net_gbp"]),"-0.05")
+
     def test_no_other_magic_sends_auroux_fill(self):
         self.store.ingest(self.root,now=1793397010)
         self.data["sktrader_demo_deals.csv"][1].append(
