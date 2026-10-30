@@ -101,7 +101,7 @@ class DashboardPublisher:
             req=urllib.request.Request(
                 f"https://discord.com/api/v10/channels/{self.channel}/messages/{mid}",
                 data=json.dumps(payload).encode(),method="PATCH",
-                headers={"Authorization":"Bot "+token,"Content-Type":"application/json"})
+                headers={"Authorization":"Bot "+token,"Content-Type":"application/json","User-Agent":"DKCapital-Sktrader-Reporting/1.0"})
             try:
                 with urllib.request.urlopen(req,timeout=12):
                     return "edited"
@@ -111,7 +111,7 @@ class DashboardPublisher:
         req=urllib.request.Request(
             f"https://discord.com/api/v10/channels/{self.channel}/messages",
             data=json.dumps(payload).encode(),method="POST",
-            headers={"Authorization":"Bot "+token,"Content-Type":"application/json"})
+            headers={"Authorization":"Bot "+token,"Content-Type":"application/json","User-Agent":"DKCapital-Sktrader-Reporting/1.0"})
         with urllib.request.urlopen(req,timeout=12) as resp:
             message=json.load(resp)
         if not str(message.get("id","")).isdigit():
