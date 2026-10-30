@@ -93,9 +93,20 @@ exec /opt/sktrader/.venv/bin/python -u -m sktrader replay-visible
 '
 ```
 
-The command checks that **all currently loaded sidebar cards** can be read,
-then filters to AUROUX XAUUSD and the configured timeframe/ranges. Each
-eligible card is sent separately, oldest first, even when prices match.
+The command scrolls the Alerts sidebar through older pages (up to 60 small
+scroll increments by default), preserving an ordered archive of card text.
+It checks each page for completeness and requires at least two-card overlap
+when the website replaces a virtualised page. It then filters to AUROUX
+XAUUSD and the configured timeframe/ranges. Each eligible card is sent
+separately, oldest first, even when prices match. A fresh scanner selection
+does not necessarily mean that JIFU's Alerts panel is scanner-filtered.
+
+To scan a longer history, set `SKTRADER_REPLAY_MAX_SCROLLS=120` in the
+private local `/opt/sktrader/.env` before replaying (maximum 200).
+If the scan reaches the cap or loses history-page overlap, it stops **without
+consuming the one-time replay batch**, allowing a safe retry. Where the
+sidebar cannot be programmatically scrolled, the command falls back to
+the latest cards only and reports the limitation.
 Replayed Discord cards are prominently marked **HISTORICAL REPLAY, NOT A
 NEW SIGNAL, NO TRADE**.
 
@@ -104,13 +115,15 @@ Repeating the command does not create a second historical replay batch;
 after interrupted delivery the pending queued messages are retried. Discord
 network errors can still create a rare duplicate, despite the message nonce.
 
-If the current mixed-scanner sidebar contains **no AUROUX XAUUSD card**,
+If the scanned mixed-scanner history contains **no AUROUX XAUUSD card**,
 the command sends zero messages and does **not** consume the one-time replay.
-The feed may have changed since any earlier screenshots; the command cannot
-retrieve cards no longer loaded by JIFU.
+The browser can only retrieve as much older history as JIFU's sidebar exposes;
+it cannot invent missing alerts or retrieve data JIFU no longer makes available.
+Scanning can take longer when JIFU fetches or virtualises older cards.
 
-The replay batch also updates the mixed-feed cursor so the subsequent
-`watch` process does not mistake just-replayed cards for new ones.
+The replay batch stores the **latest (newest) page** as the mixed-feed
+cursor, not the older end of the archive, so the subsequent `watch` process
+does not mistake just-replayed cards for new ones.
 After replay, restart `watch` normally.
 
 ## Important limitations
