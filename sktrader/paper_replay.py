@@ -16,6 +16,7 @@ import urllib.error
 
 from sktrader.market_feed import MarketFeed
 from sktrader.paper_portfolios import PaperPortfolios, SCANNERS, timestamp
+from sktrader.paper_dashboard import DashboardPublisher
 
 DEFAULT_CHANNEL = "1565846495578558526"
 
@@ -199,6 +200,8 @@ def main():
     token=args.token_file.read_text().strip()
     feed=MarketFeed(args.market,expected_login=args.expected_login)
     replay=PaperReplay(args.signals,args.market,args.paper)
+    dashboard=DashboardPublisher(replay.engine.db, channel=args.channel)
+    last_dashboard=0
     while True:
         try:
             feed.ingest(args.common)
@@ -206,6 +209,9 @@ def main():
             for event in replay.pending_notifications():
                 notify_discord(args.channel,token,event)
                 replay.mark_sent(event[0])
+            if time.monotonic()-last_dashboard > 60:
+                dashboard.publish(token)
+                last_dashboard=time.monotonic()
         except (OSError,ValueError,RuntimeError,sqlite3.Error,urllib.error.URLError) as exc:
             print("paper replay paused:",str(exc)[:240],flush=True)
         time.sleep(args.interval)
