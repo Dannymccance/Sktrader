@@ -7,10 +7,10 @@ Minimal JIFU scanner monitoring for DK Capital: **JIFU Auroux Alerts -> Python/P
 ## What it does
 
 - Keeps an authenticated Chromium session on the existing VPS.
-- Tracks the mixed JIFU Alerts sidebar (Auroux, SniperPro, WolfX, Harmonics etc.) every 5 seconds without reloading the chart, but only forwards AUROUX XAUUSD.
+- Requires the right-hand JIFU **Alerts** sidebar to have **AUROUX SCANNER** explicitly selected, with **All** highlighted. Does not modify the selection or reload the page automatically. Reads and forwards only AUROUX XAUUSD.
 - Validates the source AUROUX, XAUUSD, BUY/SELL, timeframe, point of interest, invalidation, exits and level. No timeframe or level is excluded.
 - Saves a baseline on first launch, so old alerts are not posted as new trades.
-- Detects new AUROUX XAUUSD cards by comparing the entire ordered mixed-provider feed, including surrounding non-Auroux cards for overlap.
+- Detects new AUROUX XAUUSD cards using a dedicated Auroux-only ordered snapshot. Existing mixed-provider baselines are kept separate so changing UI filters cannot silently overwrite Auroux monitoring history.
 - Records alerts and Discord delivery status in SQLite for restart recovery.
 - Sends **only** the source Auroux card fields to the existing DK Capital Discord bot. No extra commentary, timestamps, event IDs, or health messages are sent to that channel.
 - Fails closed on missing or malformed alerts and warns on repeated read failures.
@@ -44,7 +44,38 @@ set -a; . ./.env; set +a
 
 Log in manually in the opened Chromium window, select the **Auroux** scanner, open **Alerts**, choose **All**, and press Enter in the terminal to close the browser and save the session.
 
-### Monitor
+### JIFU scanner selector unexpectedly changes
+
+The top-left **Select Scanner** on the chart and the right-hand
+**Preferred Customer > scanner dropdown** are different controls.
+Only the latter determines which source is displayed inside the
+Alerts sidebar. From the VNC session on display `:155`, ensure that
+the right-hand dropdown says **AUROUX SCANNER** and the timeframe bar
+highlights **All**.
+
+JIFU can reset its dropdown on reload or app reinitialisation.
+Sktrader previously tried to click ambiguously named "All" controls
+and reloaded the page after repeated errors. This version deliberately
+**does neither**. It checks the right-hand scanner header before
+accepting any alert feed data:
+
+- `auroux`: read the complete Auroux XAUUSD feed and deliver only new cards.
+- `unselected`: pause, preserve the last trusted scanner snapshot and
+  log a request for manual selection in VNC. No Discord messages are sent.
+- `unknown`: pause rather than assume the source.
+- `auroux` with non-Auroux feed cards: fail closed and keep the
+  existing snapshot until the website finishes updating the UI.
+
+Keep `SKTRADER_HEADLESS=false` while you test the live scanner selector.
+Once the UI is stable, headless operation may be re-enabled, but the
+right-hand scanner must still be selected on every new page load. The
+current implementation **does not automatically reselect AUROUX**,
+because the authenticated scanner dropdown's menu structure has not
+been verified and selecting the wrong option could produce missed
+alerts. If it still resets with Sktrader stopped, that is likely a
+JIFU application/session issue, not a collector interaction.
+
+## Monitor
 
 ```bash
 cd /opt/sktrader
@@ -52,7 +83,7 @@ set -a; . ./.env; set +a
 .venv/bin/python -m sktrader watch
 ```
 
-The initial log should report `Baseline saved: N mixed-scanner feed cards (M Auroux XAUUSD)`. **Historical cards are intentionally not sent by the live watcher**. Manual `replay-visible` is the separate one-time path. New cards produce Discord notifications. Run `python -m unittest discover -s tests -v` for offline tests.
+The initial log should report `AUROUX-only baseline saved: N visible XAUUSD cards`. If the sidebar selector is unselected, the collector pauses and **does not baseline anything**. Historical cards are intentionally not sent by the live watcher. Manual `replay-visible` is the separate one-time path. New cards produce Discord notifications. Run `python -m unittest discover -s tests -v` for offline tests.
 
 After a successful interactive test, install the example systemd service at `deploy/sktrader.service.example`, substituting the actual Linux user and paths. Only one process may use the browser profile at once.
 
