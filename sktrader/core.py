@@ -261,8 +261,7 @@ class EventStore:
         return len(eligible), previous is None
 
     def replay_visible_once(
-        self, cards: list[str], *, timeframe: str, levels: frozenset[int],
-        feed_cursor: list[str] | None = None,
+        self, cards: list[str], *, feed_cursor: list[str] | None = None,
     ) -> tuple[int, bool]:
         """Queue one historical batch of visible AUROUX XAUUSD cards.
 
@@ -274,18 +273,14 @@ class EventStore:
         """
         if not cards:
             raise SnapshotError("Cannot replay an empty JIFU feed")
-        if timeframe not in {"ALL", "1M", "5M", "15M", "30M", "1H", "4H"}:
-            raise ValueError("Unsupported replay timeframe")
-        if not levels:
-            raise ValueError("No scanner levels configured")
         previous_replay = self.conn.execute(
             "SELECT alert_count FROM visible_replay_batch WHERE id=1"
         ).fetchone()
         if previous_replay is not None:
             return 0, True
 
-        # Validate all AUROUX XAUUSD cards before touching the database,
-        # even if some are outside the configured delivery filters.
+        # Every AUROUX XAUUSD card is eligible, irrespective of timeframe,
+        # scanner range, identical prices or card age.
         eligible: list[Alert] = []
         for card in reversed(cards):
             if not auroux_xauusd_card(card):
@@ -294,8 +289,7 @@ class EventStore:
                 alert = parse_card(card)
             except AlertError as exc:
                 raise SnapshotError(f"Malformed historical AUROUX XAUUSD card: {exc}") from exc
-            if (timeframe == "ALL" or timeframe == alert.timeframe) and alert.level in levels:
-                eligible.append(alert)
+            eligible.append(alert)
 
         # History may be virtualised and include older cards that are no
         # longer in the live top-of-feed window. Keep the live cursor at the
