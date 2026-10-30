@@ -28,6 +28,18 @@ def dashboard(ledger: sqlite3.Connection):
         closed = ledger.execute(
             "SELECT state,net_pnl,exit_time FROM paper_signals WHERE scanner=? "
             "AND state IN ('TP1','SL')", (scanner,)).fetchall()
+        # Cash-balance drawdown from realized exits only; this is not
+        # an intratrade equity drawdown estimate.
+        curve=Decimal("1000")
+        peak=curve
+        max_drawdown=Decimal("0")
+        for (profit,) in ledger.execute(
+            "SELECT net_pnl FROM paper_signals WHERE scanner=? "
+            "AND state IN ('TP1','SL') ORDER BY exit_time,event_id", (scanner,)):
+            curve+=Decimal(profit)
+            peak=max(peak,curve)
+            if peak>0:
+                max_drawdown=max(max_drawdown,(peak-curve)*100/peak)
         wins = sum(1 for state,_,_ in closed if state == "TP1")
         losses = len(closed)-wins
         week = now.isocalendar()
@@ -45,7 +57,7 @@ def dashboard(ledger: sqlite3.Connection):
                                Decimal(entry)-mark)*Decimal(lots)*Decimal("100")
         accounts.append({"scanner":scanner,"balance":Decimal(balance),
                          "realized":Decimal(realized),"wins":wins,"losses":losses,
-                         "weekly":weekly,"pending":orders,"open":positions,
+                         "weekly":weekly,"drawdown":max_drawdown,"pending":orders,"open":positions,
                          "unrealized":unrealized})
     fields = []
     for a in accounts:
@@ -54,7 +66,7 @@ def dashboard(ledger: sqlite3.Connection):
                 f"Realized: ${a['realized']:,.2f}\n"
                 f"Closed: {a['wins']+a['losses']} | W: {a['wins']} | L: {a['losses']} "
                 f"| WR: {win_rate}\n"
-                f"Weekly realized: ${a['weekly']:,.2f}\n"
+                f"Weekly realized: ${a['weekly']:,.2f} | Realized DD: {a['drawdown']:.1f}%\n"
                 f"Pending: {a['pending']} | Open: {len(a['open'])}")
         if quote_fresh:
             line += f"\n**Indicative equity: ${a['balance']+a['unrealized']:,.2f}** | Floating: ${a['unrealized']:,.2f}"
