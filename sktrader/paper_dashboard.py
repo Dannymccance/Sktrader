@@ -65,7 +65,7 @@ def dashboard(ledger: sqlite3.Connection):
         fields.append({"name":a["scanner"],"value":line[:1024],"inline":False})
     return {"embeds":[{"title":"DK Capital | Paper Portfolios (SIMULATED)",
                         "description":"Five independent USD virtual books, each started at $1,000. "
-                        "Paper fills are NOT broker executions. "
+                        "Paper fills are not broker executions. "
                         "Equity is indicative when the latest quote is fresh; fees/slippage are not fully calibrated.",
                         "color":3447003,
                         "fields":fields,
