@@ -131,6 +131,9 @@ class PaperReplay:
             last=self.engine.db.execute("SELECT stamp FROM quotes ORDER BY seq DESC LIMIT 1").fetchone()
             if last and stamp <= timestamp(last[0]):
                 raise RuntimeError("out-of-order tick feed; stop paper replay")
+            if last and (stamp-timestamp(last[0])).total_seconds() > 5:
+                if self.engine.db.execute("SELECT 1 FROM paper_signals WHERE state='OPEN' LIMIT 1").fetchone():
+                    raise RuntimeError("market data gap with open paper position: manual reconciliation required")
             with self.engine.db:
                 if (now-stamp).total_seconds() > 30 or (stamp-now).total_seconds() > 5 or (float(ask)-float(bid)) > 1.50:
                     self._set_state("tick_cursor",rid)
