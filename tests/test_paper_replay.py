@@ -58,6 +58,20 @@ class ReplayTests(unittest.TestCase):
         self.assertEqual(len(p.pending_notifications()),2)
         p.engine.db.close();p.signals.close();p.market.close()
 
+    def test_market_data_gap_with_open_position_fails_closed(self):
+        p=PaperReplay(self.signal,self.market,self.paper)
+        self.add()
+        p.tick(now="2026-10-30T21:50:01Z")
+        p.engine.on_quote(observed_at="2026-10-30T21:50:02Z",bid="3999.8",ask="4000")
+        self.assertEqual(p.engine.snapshot()["NEXUS"]["open_positions"],1)
+        with sqlite3.connect(self.market) as db:
+            db.execute("INSERT INTO feed_ticks VALUES (?,?,?,?)",
+                       (1793397010000,"4010.2","4010.4",2))
+        with self.assertRaisesRegex(RuntimeError,"market data gap"):
+            p.tick(now="2026-10-30T21:50:11Z")
+        self.assertEqual(p.engine.snapshot()["NEXUS"]["open_positions"],1)
+        p.engine.db.close();p.signals.close();p.market.close()
+
     def test_old_signal_records_received_but_not_pending(self):
         p=PaperReplay(self.signal,self.market,self.paper)
         self.add(age="5 minutes ago")
