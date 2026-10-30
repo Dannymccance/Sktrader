@@ -8,11 +8,11 @@ Minimal JIFU scanner monitoring for DK Capital: **JIFU Auroux Alerts -> Python/P
 
 - Keeps an authenticated Chromium session on the existing VPS.
 - Tracks the mixed JIFU Alerts sidebar (Auroux, SniperPro, WolfX, Harmonics etc.) every 5 seconds without reloading the chart, but only forwards AUROUX XAUUSD.
-- Validates XAUUSD, BUY/SELL, timeframe, point of interest, invalidation and both exits.
+- Validates the source AUROUX, XAUUSD, BUY/SELL, timeframe, point of interest, invalidation, exits and level. No timeframe or level is excluded.
 - Saves a baseline on first launch, so old alerts are not posted as new trades.
 - Detects new AUROUX XAUUSD cards by comparing the entire ordered mixed-provider feed, including surrounding non-Auroux cards for overlap.
 - Records alerts and Discord delivery status in SQLite for restart recovery.
-- Posts new eligible alerts to Discord, explicitly marked **ALERT ONLY - NO TRADE**.
+- Sends **only** the source Auroux card fields to the existing DK Capital Discord bot. No extra commentary, timestamps, event IDs, or health messages are sent to that channel.
 - Fails closed on missing or malformed alerts and warns on repeated read failures.
 
 ## Install on VPS
@@ -52,7 +52,7 @@ set -a; . ./.env; set +a
 .venv/bin/python -m sktrader watch
 ```
 
-The initial log should report `Baseline saved: N mixed-scanner feed cards (M Auroux XAUUSD)`. **Historical cards are intentionally not sent**. New cards produce Discord notifications. Run `python -m unittest discover -s tests -v` for offline tests.
+The initial log should report `Baseline saved: N mixed-scanner feed cards (M Auroux XAUUSD)`. **Historical cards are intentionally not sent by the live watcher**. Manual `replay-visible` is the separate one-time path. New cards produce Discord notifications. Run `python -m unittest discover -s tests -v` for offline tests.
 
 After a successful interactive test, install the example systemd service at `deploy/sktrader.service.example`, substituting the actual Linux user and paths. Only one process may use the browser profile at once.
 
@@ -61,8 +61,7 @@ After a successful interactive test, install the example systemd service at `dep
 | Variable | Default |
 |---|---|
 | `SKTRADER_POLL_SECONDS` | `5` |
-| `SKTRADER_TIMEFRAME` | `ALL` (every Auroux timeframe; individual card per signal) |
-| `SKTRADER_LEVELS` | `250,500` |
+| `SKTRADER_TIMEFRAME`, `SKTRADER_LEVELS` | Obsolete legacy settings; ignored even if present in an existing `.env` |
 | `SKTRADER_HEADLESS` | `true` |
 | `SKTRADER_DISCORD_CHANNEL_ID` | Existing DK Capital Discord bot destination, `1565508564775075981` |
 | `SKTRADER_DISCORD_BOT_TOKEN_FILE` | Private local file containing existing bot token, readable only by the Sktrader Linux user |
@@ -97,7 +96,7 @@ The command scrolls the Alerts sidebar through older pages (up to 60 small
 scroll increments by default), preserving an ordered archive of card text.
 It checks each page for completeness and requires at least two-card overlap
 when the website replaces a virtualised page. It then filters to AUROUX
-XAUUSD and the configured timeframe/ranges. Each eligible card is sent
+XAUUSD only. All timeframes and scanner ranges are included. Each eligible card is sent
 separately, oldest first, even when prices match. A fresh scanner selection
 does not necessarily mean that JIFU's Alerts panel is scanner-filtered.
 
@@ -107,8 +106,7 @@ If the scan reaches the cap or loses history-page overlap, it stops **without
 consuming the one-time replay batch**, allowing a safe retry. Where the
 sidebar cannot be programmatically scrolled, the command falls back to
 the latest cards only and reports the limitation.
-Replayed Discord cards are prominently marked **HISTORICAL REPLAY, NOT A
-NEW SIGNAL, NO TRADE**.
+Both live and manually replayed Discord messages contain **only the original Auroux alert card fields**, as requested. Older replayed cards may be stale. Do not treat a replay as a fresh trade recommendation.
 
 The whole batch and its SQLite outbox events are recorded atomically.
 Repeating the command does not create a second historical replay batch;
@@ -125,6 +123,25 @@ The replay batch stores the **latest (newest) page** as the mixed-feed
 cursor, not the older end of the archive, so the subsequent `watch` process
 does not mistake just-replayed cards for new ones.
 After replay, restart `watch` normally.
+
+## Discord messages: only Auroux signal cards
+
+Only AUROUX XAUUSD alerts are posted to channel `1565508564775075981`,
+using the existing DK Capital Discord bot. Scanner range and timeframe are
+not eligibility filters, and cards with identical prices but different
+timeframes remain independent signals.
+
+Discord embeds mirror the visible card, with **AUROUX**, its source age,
+**XAUUSD**, the signal timeframe/direction, **Point of Interest**,
+**Invalidation**, **Exit1**, **Exit2**, and **Level**. No additional analysis,
+stop commentary, tracking IDs, broker orders, health-status posts or
+promotional content. If JIFU's sidebar contains only WOLFX or other scanners,
+Sktrader posts nothing, even if a WOLFX card happens to say XAUUSD.
+
+All error diagnostics go to the VPS process logs, not the signal channel.
+A manual historical replay uses the same signal-only formatting as live
+messages. Replaying old cards does not imply they are actionable; check the
+signal's original age before relying on it.
 
 ## Important limitations
 
@@ -229,7 +246,7 @@ Remove any obsolete `SKTRADER_DISCORD_WEBHOOK` line to avoid confusion;
 webhooks are no longer used. The bot token is validated on watcher startup.
 To avoid event duplication, run exactly one Sktrader watcher at a time.
 
-**Parser acceptance gate:** The diagnostic reports how many mixed-scanner card boundaries are readable. A mixed feed of 10 cards with zero AUROUX XAUUSD is a valid capture, not a parser failure. Only source `AUROUX` and instrument `XAUUSD` are eligible for publication; a WOLFX/XAUUSD signal must never be forwarded as Auroux. The initial mixed-feed read establishes a baseline and does not replay historical posts. An incomplete feed or malformed new eligible Auroux signal fails closed without advancing the durable snapshot. A new Auroux card should appear in Discord after its insertion into the feed, subject to the configured timeframe and scanner-level filters.
+**Parser acceptance gate:** The diagnostic reports how many mixed-scanner card boundaries are readable. A mixed feed of 10 cards with zero AUROUX XAUUSD is a valid capture, not a parser failure. Only source `AUROUX` and instrument `XAUUSD` are eligible for publication; a WOLFX/XAUUSD signal must never be forwarded as Auroux. The initial mixed-feed read establishes a baseline and does not replay historical posts. An incomplete feed or malformed new eligible Auroux signal fails closed without advancing the durable snapshot. A new Auroux card should appear in Discord after its insertion into the feed, with no timeframe or range restrictions.
 
 The All filter in JIFU is a **timeframe** filter, not proof that the alert feed is restricted to the selected scanner. If source filtering is supported in the JIFU UI, it can be investigated separately; don't assume it is active.
 
