@@ -57,7 +57,7 @@ class RecoveryTests(unittest.TestCase):
             form.count.return_value = 1
             username = form.locator.return_value
             username.count.return_value = 1
-            button = form.get_by_role.return_value
+            button = form.locator.return_value
             button.count.return_value = 1
             with patch.dict(sys.modules, {"playwright.sync_api": types.SimpleNamespace(TimeoutError=TimeoutError)}):
                 self.assertTrue(try_login(page, path))
