@@ -497,10 +497,10 @@ def diagnose(config: Config) -> None:
                 print("Feed capture: NOT READY.", exc)
             else:
                 visible = page.evaluate(EXTRACT_CARDS_JS)
-            gold_count = sum(is_xauusd_card(card) for card in visible)
-            print(f"Feed capture: READY; {status['poi_labels']} mixed-scanner cards; "
-                  f"{gold_count} XAUUSD cards across all scanners; "
-                  f"{len(alerts)} from AUROUX")
+                gold_count = sum(is_xauusd_card(card) for card in visible)
+                print(f"Feed capture: READY; {status['poi_labels']} mixed-scanner cards; "
+                      f"{gold_count} XAUUSD cards across all scanners; "
+                      f"{len(alerts)} from AUROUX")
         finally:
             context.close()
 
