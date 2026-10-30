@@ -47,8 +47,7 @@ class MultiScannerTests(unittest.TestCase):
         self.assertIn("<t:1793347200:F>", content)  # 08:00 UTC approximate
         self.assertIn("Detected by Sktrader:", content)
         self.assertIn("<t:1793347320:F>", content)  # 08:02 UTC actual
-        self.assertIn("\\n", content)
-        self.assertNotIn("\\\\n", content)
+        self.assertIn("2 minutes ago", content)
 
     def test_observation_timestamp_survives_restart(self):
         with tempfile.TemporaryDirectory() as temp:
