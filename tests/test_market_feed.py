@@ -63,6 +63,7 @@ class MarketFeedTests(unittest.TestCase):
 
     def test_reject_crossed_quotes(self):
         self.write("sktrader_xau_quotes.csv",[["1793380000100","4001","4000","2"]])
+        os.utime(self.root/"sktrader_xau_quotes.csv", (1793380010,1793380010))
         with self.assertRaisesRegex(ValueError,"invalid/future broker tick"):
             self.feed.ingest(self.root, now=1793380010)
         self.assertEqual(self.feed.db.execute("SELECT COUNT(*) FROM feed_ticks").fetchone()[0],0)
