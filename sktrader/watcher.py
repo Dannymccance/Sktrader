@@ -276,8 +276,8 @@ class Config:
         if require_discord and not token_file:
             raise ValueError("SKTRADER_DISCORD_BOT_TOKEN_FILE is required for watch mode")
         poll = float(os.getenv("SKTRADER_POLL_SECONDS", "5"))
-        if not 1 <= poll <= 60:
-            raise ValueError("Poll interval must be 1-60 seconds")
+        if not 0.1 <= poll <= 60:
+            raise ValueError("Poll interval must be 0.1-60 seconds")
         return cls(
             url=os.getenv("SKTRADER_JIFU_URL", DEFAULT_URL),
             profile=Path(os.getenv("SKTRADER_BROWSER_PROFILE", "~/.local/share/sktrader/jifu-profile")).expanduser(),
@@ -687,7 +687,7 @@ def watch(config: Config) -> None:
                                 LOG.error("JIFU browser crashed during recovery; exiting for systemd restart")
                                 raise
                             LOG.warning("JIFU recovery reload failed: %s", type(reload_exc).__name__)
-                time.sleep(max(0.2, config.poll_seconds - (time.monotonic() - started)))
+                time.sleep(max(0.01, config.poll_seconds - (time.monotonic() - started)))
         finally:
             try:
                 context.close()
