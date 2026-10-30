@@ -49,6 +49,33 @@ class MultiScannerTests(unittest.TestCase):
         self.assertIn("<t:1793347320:F>", content)  # 08:02 UTC actual
         self.assertIn("2 minutes ago", content)
 
+    def test_coverage_records_multiline_jifu_cards_without_reposting(self):
+        # JIFU's DOM cards contain line breaks between scanner and age.
+        # Normalization must use whitespace, not a literal backslash-s.
+        with tempfile.TemporaryDirectory() as folder:
+            store = ScannerStore(Path(folder) / "signals.db")
+            latest = [
+                "AUROUX\\n2 minutes ago\\nXAUUSD\\n5M - BUY\\n"
+                "Point of Interest 4025.50000\\nInvalidation 4015.50000\\n"
+                "Exit 1 4035.50000\\nExit 2 4045.50000",
+                "SNIPERPRO\\n2 minutes ago\\nUSDJPY\\n5M - SELL\\n"
+                "Point of Interest 150.10000\\nExit 1 149.50000",
+            ]
+            latest = [x.replace("\\n", "\n") for x in latest]
+            count, baseline = store.observe(latest)
+            self.assertTrue(baseline)
+            self.assertEqual(count, 0)
+            rows = store.coverage()
+            self.assertIn("AUROUX", rows)
+            self.assertIn("SNIPER PRO", rows)
+            self.assertEqual(rows["AUROUX"]["last_signal_at"], None)
+            self.assertEqual(store.pending(), [])
+            count, baseline = store.observe(latest)
+            self.assertFalse(baseline)
+            self.assertEqual(count, 0)
+            self.assertEqual(store.pending(), [])
+            store.conn.close()
+
     def test_observation_timestamp_survives_restart(self):
         with tempfile.TemporaryDirectory() as temp:
             filename = Path(temp) / "signals.db"
