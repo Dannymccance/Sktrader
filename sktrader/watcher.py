@@ -31,6 +31,39 @@ def browser_geometry() -> tuple[dict[str, int], list[str]]:
         [f"--window-size={width + 80},{height + 80}", "--window-position=15,15"],
     )
 
+# Read only the scanner selector in the Alerts sidebar header, not the
+# separate chart-scanner selector at the top left or the AUROUX alert cards.
+# This returns a status only and never clicks or changes the user's UI.
+SIDEBAR_SCANNER_STATE_JS = r"""() => {
+  const tree = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  let foundAuroux = false;
+  let foundUnselected = false;
+  let node;
+  while ((node = tree.nextNode())) {
+    const t = (node.nodeValue || '').trim().replace(/\s+/g, ' ');
+    if (!/^(?:AUROUX(?:\s+SCANNER)?|Select Scanner(?:\s+Choose an option)?)$/i.test(t)) continue;
+    const r = node.parentElement?.getBoundingClientRect();
+    if (!r || r.width <= 0 || r.height <= 0 ||
+        r.left < window.innerWidth * 0.60 ||
+        r.left >= window.innerWidth ||
+        r.top < window.innerHeight * 0.09 ||
+        r.top > window.innerHeight * 0.35) continue;
+    if (/^Select Scanner/i.test(t)) foundUnselected = true;
+    else foundAuroux = true;
+  }
+  // Select Scanner takes priority if a stale Auroux label is also present.
+  return foundUnselected ? 'unselected' : (foundAuroux ? 'auroux' : 'unknown');
+}"""
+
+
+def _sidebar_scanner_state(page) -> str:
+    """Return AUROUX, unselected or unknown, never infer from alert content."""
+    status = page.evaluate(SIDEBAR_SCANNER_STATE_JS)
+    if status not in {"auroux", "unselected", "unknown"}:
+        raise SnapshotError("Unexpected scanner selector state")
+    return status
+
+
 # The JIFU dashboard has a large chart and a narrow Alerts sidebar. Chart
 # annotations can themselves contain "Point of Interest", so do not treat
 # every matching document text node as an alert. Only inspect the right sidebar.
@@ -276,17 +309,13 @@ def _one_browser_at_a_time(profile: Path):
 
 
 def _prepare_page(page) -> None:
-    """Best-effort select the alerts panel; never click a trade action."""
-    try:
-        page.get_by_text("Alerts", exact=True).first.click(timeout=4000)
-    except Exception:
-        LOG.info("Could not select Alerts tab automatically; inspecting current panel")
-    # The UI's All filter avoids missing alerts on another timeframe and
-    # preserves the alert ordering for snapshot reconciliation.
-    try:
-        page.get_by_text("All", exact=True).last.click(timeout=2500)
-    except Exception:
-        LOG.info("Could not select All filter; ensure the panel is set to All manually")
+    """Preserve the user's VNC-selected AUROUX > Alerts > All configuration.
+
+    JIFU's dynamic UI can reset its sidebar selector when its tabs or a page
+    reload are clicked. Do not click the unrelated top-left chart scanner,
+    Alerts tab or an ambiguous All button while monitoring.
+    """
+    page.wait_for_timeout(1250)
 
 
 def _read_feed_cards(page) -> list[str]:
@@ -558,36 +587,52 @@ def watch(config: Config) -> None:
             _prepare_page(page)
             failures = 0
             health_notified = False
+            last_selector = None
             while True:
                 started = time.monotonic()
                 try:
+                    selector = _sidebar_scanner_state(page)
+                    if selector != last_selector:
+                        if selector == "auroux":
+                            LOG.info("JIFU sidebar AUROUX scanner selected")
+                        else:
+                            LOG.warning(
+                                "JIFU sidebar scanner state=%s. Select AUROUX in "
+                                "the right-hand Alerts dropdown in VNC. "
+                                "No signals will be baselined or forwarded until restored.",
+                                selector,
+                            )
+                        last_selector = selector
+                    if selector != "auroux":
+                        raise SnapshotError("AUROUX scanner is not selected in Alerts sidebar")
                     feed_cards = _read_feed_cards(page)
-                    count, baseline = store.observe_feed(feed_cards)
+                    count, baseline = store.observe_auroux_sidebar(feed_cards)
                     if baseline:
-                        auroux_count = sum(auroux_xauusd_card(card) for card in feed_cards)
                         LOG.info(
-                            "Baseline saved: %s mixed-scanner feed cards (%s Auroux XAUUSD); "
-                            "historical signals not replayed", len(feed_cards), auroux_count
+                            "AUROUX-only baseline saved: %s visible XAUUSD cards; "
+                            "historical signals not replayed", len(feed_cards)
                         )
                     elif count:
-                        LOG.info("Detected %s new Auroux XAUUSD alerts", count)
+                        LOG.info("Detected %s newly published Auroux XAUUSD cards", count)
                     _send_pending(store, config)
                     if health_notified:
-                        _notify_health(config, "Recovered: JIFU alert parsing resumed")
+                        _notify_health(config, "Recovered: JIFU Auroux sidebar reading resumed")
                     failures = 0
                     health_notified = False
-                except (Exception) as exc:
+                except Exception as exc:
                     failures += 1
-                    LOG.exception("Monitor pass failed (%s consecutive): %s", failures, type(exc).__name__)
+                    # Do not reload automatically. JIFU reloads can erase its
+                    # scanner dropdown selection and destroy feed overlap.
+                    if failures == 1 or failures % 12 == 0:
+                        LOG.warning("Monitor paused (%s consecutive failures): %s: %s",
+                                    failures, type(exc).__name__, str(exc)[:350])
                     if failures == 3 and not health_notified:
-                        _notify_health(config, "ALERT: cannot read/forward JIFU alerts; check login or UI. Trading is NOT enabled.")
+                        _notify_health(
+                            config,
+                            "Cannot read AUROUX sidebar; select AUROUX > Alerts > All "
+                            "in VNC. No alert feed cursor will advance.",
+                        )
                         health_notified = True
-                    if failures and failures % 6 == 0:
-                        try:
-                            page.reload(wait_until="domcontentloaded", timeout=45000)
-                            _prepare_page(page)
-                        except Exception:
-                            LOG.exception("Recovery page reload failed")
                 time.sleep(max(0.2, config.poll_seconds - (time.monotonic() - started)))
         finally:
             context.close()
