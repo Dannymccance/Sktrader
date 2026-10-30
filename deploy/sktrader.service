@@ -1,0 +1,33 @@
+[Unit]
+Description=Sktrader JIFU XAUUSD Discord collector (watch only)
+Wants=network-online.target
+After=network-online.target sktrader-display.service
+Requires=sktrader-display.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=dkmt5c
+Group=dkmt5c
+WorkingDirectory=/opt/sktrader
+EnvironmentFile=/opt/sktrader/.env
+Environment=HOME=/var/lib/dkcapital-mt5-3
+Environment=DISPLAY=:155
+Environment=XAUTHORITY=/var/lib/dkcapital-mt5-3/.local/share/sktrader/Xauthority-155
+Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/sktrader/.browsers
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/sktrader/.venv/bin/python -u -m sktrader watch
+Restart=always
+RestartSec=8
+TimeoutStopSec=25
+KillMode=control-group
+MemoryHigh=1400M
+MemoryMax=2400M
+OOMPolicy=stop
+NoNewPrivileges=true
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
