@@ -33,7 +33,7 @@ def private_credentials(path: Path) -> dict[str, str]:
 
 
 def try_login(page, path: Path) -> bool:
-    """Submit only an unambiguous email/password form. Never bypass 2FA/CAPTCHA."""
+    """Submit only a uniquely identified login form. Never bypass 2FA/CAPTCHA."""
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
     creds = private_credentials(path)
     password = page.locator('input[type="password"]:visible')
@@ -50,11 +50,14 @@ def try_login(page, path: Path) -> bool:
     )
     if user.count() != 1:
         raise RuntimeError("Ambiguous JIFU username field: interactive authentication required")
+    # Prefer the form's explicit submit control rather than a language-specific
+    # button caption. Some JIFU login forms use "Continue" or "Submit".
+    # Never guess when multiple enabled, visible submission controls exist.
+    buttons = form.locator('button[type="submit"]:visible:enabled, input[type="submit"]:visible:enabled')
+    if buttons.count() != 1:
+        raise RuntimeError("Ambiguous JIFU submit control: interactive authentication required")
     user.fill(creds["email"])
     password.fill(creds["password"])
-    buttons = form.get_by_role("button", name=__import__("re").compile(r"^(sign in|log in|login)$", __import__("re").I))
-    if buttons.count() != 1:
-        raise RuntimeError("Ambiguous JIFU sign-in button: interactive authentication required")
     buttons.click(timeout=10000)
     try:
         page.wait_for_url("**/jifu/dashboard**", timeout=15000)
