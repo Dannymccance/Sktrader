@@ -26,7 +26,7 @@ class AurouxBridgeTests(unittest.TestCase):
         con.execute("CREATE TABLE scanner_events(id INTEGER PRIMARY KEY, payload TEXT)")
         con.execute("INSERT INTO scanner_events VALUES(?,?)", (21, json.dumps(self.event())))
         con.execute("INSERT INTO scanner_events VALUES(?,?)", (22, json.dumps(self.event(scanner="NEXUS"))))
-        self.assertEqual(export_lines(con), [f"21;BUY;4000.50000000;3990.00000000;4010.00000000;{int(datetime(2026,10,30,20,2,1,tzinfo=timezone.utc).timestamp())}\\n"])
+        self.assertEqual(export_lines(con), [f"21;BUY;4000.50000000;3990.00000000;4010.00000000;{int(datetime(2026,10,30,20,2,1,tzinfo=timezone.utc).timestamp())}\n"])
 
     def test_conservative_age_and_missing_timestamp(self):
         event = self.event()
