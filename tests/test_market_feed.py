@@ -1,4 +1,5 @@
 import csv
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -18,6 +19,7 @@ class MarketFeedTests(unittest.TestCase):
         self.write("sktrader_xau_identity.csv",[["12345","DEMO","USD","Vantage-Demo","XAUUSD+","100","0.01","1","0.01","50","0.01","1793380000"]])
         self.write("sktrader_xau_quotes.csv",[["1793380000100","4000.1","4000.3","2"]])
         self.write("sktrader_xau_m1.csv",[["1793379960","3999","4002","3998","4001","150","20"]])
+        os.utime(self.root/"sktrader_xau_quotes.csv", (1793380010,1793380010))
 
     def tearDown(self):
         self.feed.db.close()
@@ -32,6 +34,18 @@ class MarketFeedTests(unittest.TestCase):
     def test_identity_and_duplicate_ingestion(self):
         self.assertEqual(self.feed.ingest(self.root, now=1793380010),{"ticks":1,"m1":1})
         self.assertEqual(self.feed.ingest(self.root, now=1793380011),{"ticks":1,"m1":1})
+
+    def test_refuse_stale_tick_export_with_fresh_identity(self):
+        os.utime(self.root/"sktrader_xau_quotes.csv", (1793380000,1793380000))
+        with self.assertRaisesRegex(ValueError,"quote export stale"):
+            self.feed.ingest(self.root, now=1793380050)
+        self.assertEqual(self.feed.db.execute("SELECT COUNT(*) FROM feed_ticks").fetchone()[0],0)
+
+    def test_refuse_future_broker_tick(self):
+        self.write("sktrader_xau_quotes.csv",[["1793380800000","4000","4001","2"]])
+        os.utime(self.root/"sktrader_xau_quotes.csv", (1793380010,1793380010))
+        with self.assertRaisesRegex(ValueError,"future broker tick"):
+            self.feed.ingest(self.root, now=1793380010)
 
     def test_refuse_real_account(self):
         self.write("sktrader_xau_identity.csv",[["12345","REAL","USD","Vantage-Live","XAUUSD+","100","0.01","1","0.01","50","0.01","1793380000"]])
@@ -49,7 +63,7 @@ class MarketFeedTests(unittest.TestCase):
 
     def test_reject_crossed_quotes(self):
         self.write("sktrader_xau_quotes.csv",[["1793380000100","4001","4000","2"]])
-        with self.assertRaisesRegex(ValueError,"invalid tick"):
+        with self.assertRaisesRegex(ValueError,"invalid/future broker tick"):
             self.feed.ingest(self.root, now=1793380010)
         self.assertEqual(self.feed.db.execute("SELECT COUNT(*) FROM feed_ticks").fetchone()[0],0)
 
