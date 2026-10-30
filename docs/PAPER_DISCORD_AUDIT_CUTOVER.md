@@ -5,6 +5,7 @@ Target Discord channel: **1565846495578558526**.
 ## Deliberate separate events
 
 - SIGNAL RECEIVED: a detected XAUUSD scanner card from the JIFU collector.
+- SOURCE DISCORD DELIVERED: the original scanner-specific Discord message was acknowledged by the JIFU watcher and marked delivered in its source outbox. This is distinct from mere signal detection.
 - ORDER PENDING: valid signal with complete POI, Invalidation and Exit1;
   no simulated fill has occurred.
 - PAPER FILLED: price reached entry using a real bid/ask quote. It is NOT an
