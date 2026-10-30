@@ -72,19 +72,31 @@ def export_once(db_path: Path, output: Path) -> int:
     return len(lines)
 
 
+def latest_event_id(db_path: Path) -> int:
+    """Cheap change detection so unchanged feeds do not rewrite the MT5 file."""
+    uri = f"file:{db_path.resolve().as_posix()}?mode=ro"
+    with sqlite3.connect(uri, uri=True, timeout=1) as con:
+        row = con.execute("SELECT COALESCE(MAX(id),0) FROM scanner_events").fetchone()
+    return int(row[0])
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="AUROUX saved-event-to-MT5 bridge")
     parser.add_argument("--database", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--follow", action="store_true")
-    parser.add_argument("--interval", type=float, default=2)
+    parser.add_argument("--interval", type=float, default=0.1)
     args = parser.parse_args()
-    if args.interval < 0.5:
-        parser.error("--interval must be >= 0.5")
+    if args.interval < 0.05:
+        parser.error("--interval must be >= 0.05")
+    previous_id = -1
     while True:
-        count = export_once(args.database, args.output)
+        newest = latest_event_id(args.database)
+        if newest != previous_id or not args.output.is_file():
+            count = export_once(args.database, args.output)
+            previous_id = newest
+            print(f"AUROUX bridge refreshed {count} signals, scanner event watermark {newest}", flush=True)
         if not args.follow:
-            print(f"Exported {count} AUROUX signals")
             return
         time.sleep(args.interval)
 

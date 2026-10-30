@@ -8,7 +8,7 @@ input double RiskPercent = 4.0;
 input bool RoundVolumeUp = true;
 input ulong MagicNumber = 2601030;
 input int EntryTolerancePoints = 10;
-input int CheckSeconds = 2;
+input int CheckMilliseconds = 100;
 input bool SkipHistoryOnFirstStart = true;
 string checkpoint;
 
@@ -113,7 +113,7 @@ int OnInit() {
          Print("AUROUX initialized, starting after id ",watermark);
       } else Print("AUROUX waiting for initial bridge file; historical signals will not replay");
    }
-   EventSetTimer(MathMax(1,CheckSeconds));
+   EventSetMillisecondTimer(MathMax(50,CheckMilliseconds));
    return INIT_SUCCEEDED;
 }
 void OnDeinit(const int reason) { EventKillTimer(); }
