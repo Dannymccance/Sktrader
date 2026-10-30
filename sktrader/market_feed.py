@@ -80,6 +80,13 @@ class MarketFeed:
                       "volume_max","volume_step"):
             decimal(identity[field])
 
+        # A fresh account heartbeat does not imply a fresh executable quote.
+        # Quarantining stale snapshots also prevents old ticks from being
+        # replayed on service restart after the market closes.
+        quote_path = common/"sktrader_xau_quotes.csv"
+        quote_age = now - quote_path.stat().st_mtime
+        if quote_age < -15 or quote_age > 30:
+            raise ValueError("market closed or quote export stale; no paper fills")
         ticks = read_csv(common/"sktrader_xau_quotes.csv",
                          ["time_msc","bid","ask","flags"])
         bars = read_csv(common/"sktrader_xau_m1.csv",
@@ -96,7 +103,7 @@ class MarketFeed:
                 bid, ask = decimal(row["bid"]), decimal(row["ask"])
                 flags = int(row["flags"])
                 if stamp <= 0 or stamp > (now+15)*1000 or ask < bid or flags < 0:
-                    raise ValueError("invalid tick")
+                    raise ValueError("invalid/future broker tick; UTC reconciliation required")
                 self.db.execute("INSERT OR IGNORE INTO feed_ticks VALUES (?,?,?,?)",
                                 (stamp,str(bid),str(ask),flags))
             for row in bars:

@@ -19,6 +19,8 @@ def dashboard(ledger: sqlite3.Connection):
     bid, ask = (Decimal(quote[1]),Decimal(quote[2])) if quote else (None,None)
     now = datetime.now(timezone.utc)
     quote_fresh = bool(quote and abs((now-datetime.fromisoformat(quote[0])).total_seconds()) <= 30)
+    feed_status = ("PRICE FEED FRESH" if quote_fresh else
+                   "MARKET CLOSED / PRICE FEED STALE - NO QUOTE-BASED FILLS")
     accounts = []
     for scanner, balance, realized in ledger.execute(
         "SELECT scanner,balance,realized FROM portfolios ORDER BY scanner"):
@@ -76,7 +78,7 @@ def dashboard(ledger: sqlite3.Connection):
             line += f"\n#{eid} {side} {lots} @ {entry} | SL {sl} | TP1 {tp}"
         fields.append({"name":a["scanner"],"value":line[:1024],"inline":False})
     return {"embeds":[{"title":"DK Capital | Paper Portfolios (SIMULATED)",
-                        "description":"Five independent USD virtual books, each started at $1,000. "
+                        "description":feed_status + "\nFive independent USD virtual books, each started at $1,000. "
                         "Paper fills are not broker executions. "
                         "Equity is indicative when the latest quote is fresh; fees/slippage are not fully calibrated.",
                         "color":3447003,
