@@ -604,6 +604,9 @@ def watch(config: Config) -> None:
     channels = _scanner_channel_map(config)
     store = ScannerStore(config.database)
     health = HealthMonitor(config)
+    if health.channel and health.channel in channels.values():
+        raise ValueError("JIFU health channel must not be a scanner signal channel")
+    last_coverage_log = 0.0
     login_file_raw = os.getenv("SKTRADER_JIFU_CREDENTIALS_FILE", "").strip()
     login_file = Path(login_file_raw) if login_file_raw else None
     LOG.info("Starting XAUUSD-only scanner monitor for %s sources; WATCH ONLY", len(channels))
@@ -652,6 +655,11 @@ def watch(config: Config) -> None:
                     elif new_count:
                         LOG.info("Queued %s new XAUUSD signals for source-specific channels", new_count)
                     _send_scanner_pending(store, config, channels)
+                    if started - last_coverage_log >= 3600:
+                        coverage = store.coverage()
+                        LOG.info("JIFU scanner coverage (visible, not guaranteed active): %s",
+                                 json.dumps({name: coverage.get(name, {}) for name in channels}, sort_keys=True))
+                        last_coverage_log = started
                     failures = 0
                     health.healthy()
                 except Exception as exc:
