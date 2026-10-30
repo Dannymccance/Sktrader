@@ -7,7 +7,7 @@ import re
 import sqlite3
 import urllib.request
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from sktrader.core import AlertError, SnapshotError, feed_fingerprint, new_prefix
 
@@ -98,11 +98,34 @@ def parse_scanner_card(text: str) -> ScannerSignal:
     )
 
 
-def discord_card(signal: ScannerSignal) -> dict:
+def _approximate_source_time(age: str, observed: datetime) -> int | None:
+    """JIFU provides relative age, not an exact issuance timestamp."""
+    if age.lower() == "just now":
+        return int(observed.timestamp())
+    match = re.fullmatch(r"(\\d+|a|an) (second|minute|hour|day|week)s? ago", age.lower())
+    if not match:
+        return None
+    quantity = 1 if match.group(1) in {"a", "an"} else int(match.group(1))
+    seconds = {"second": 1, "minute": 60, "hour": 3600, "day": 86400, "week": 604800}[match.group(2)]
+    return int((observed - timedelta(seconds=quantity * seconds)).timestamp())
+
+
+def discord_card(signal: ScannerSignal, *, observed_at: str | None = None) -> dict:
+    """Show original approximate source age and durable detection time separately."""
+    timing = signal.relative_age
+    if observed_at:
+        observed = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+        if observed.tzinfo is None:
+            raise ValueError("Signal observation timestamp must include timezone")
+        observed = observed.astimezone(timezone.utc)
+        issued = _approximate_source_time(signal.relative_age, observed)
+        if issued is not None:
+            timing += f"\\n**Approx. JIFU time:** <t:{issued}:F> (estimated from relative age)"
+        timing += f"\\n**Detected by Sktrader:** <t:{int(observed.timestamp())}:F>"
     return {
         "embeds": [{
             "title": signal.scanner,
-            "description": f"{signal.relative_age}\n\n**{signal.symbol}**\n**{signal.timeframe} - {signal.side}**",
+            "description": f"{timing}\\n\\n**{signal.symbol}**\\n**{signal.timeframe} - {signal.side}**",
             "color": 0x22C55E if signal.side == "BUY" else 0xEF4444,
             "fields": [{**field, "inline": False} for field in signal.fields],
         }],
