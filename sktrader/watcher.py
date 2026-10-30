@@ -314,11 +314,10 @@ def _one_browser_at_a_time(profile: Path):
 
 
 def _prepare_page(page) -> None:
-    """Preserve the user's VNC-selected AUROUX > Alerts > All configuration.
+    """Preserve the unfiltered right-hand JIFU Alerts > Select Scanner > All.
 
-    JIFU's dynamic UI can reset its sidebar selector when its tabs or a page
-    reload are clicked. Do not click the unrelated top-left chart scanner,
-    Alerts tab or an ambiguous All button while monitoring.
+    Do not click the unrelated chart scanner, tabs or All buttons; JIFU can
+    change the feed when its React controls are manipulated or reloaded.
     """
     page.wait_for_timeout(1250)
 
@@ -371,7 +370,8 @@ def _post_discord(config: Config, payload: dict, *, event_id: int | None = None,
     if event_id is not None:
         # Discord deduplicates the bot's identical nonces for a few minutes.
         # SQLite's durable queue remains the authoritative long-term record.
-        payload = {**payload, "nonce": f"sktrader-{event_id}", "enforce_nonce": True}
+        prefix = "sktrader-scanners" if channel_id is not None else "sktrader"
+        payload = {**payload, "nonce": f"{prefix}-{event_id}", "enforce_nonce": True}
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(
         f"https://discord.com/api/v10/channels/{channel_id or config.discord_channel_id}/messages",
@@ -464,7 +464,7 @@ def login(config: Config) -> None:
         try:
             page = context.pages[0] if context.pages else context.new_page()
             page.goto(config.url, wait_until="domcontentloaded", timeout=45000)
-            print("Log into JIFU in this browser, open Auroux > Alerts > All.")
+            print("Log into JIFU, open Alerts, leave right-hand scanner at Select Scanner and timeframe at All.")
             input("Once the alerts are visible, press Enter to save the browser session and close: ")
         finally:
             context.close()
@@ -496,8 +496,11 @@ def diagnose(config: Config) -> None:
             except SnapshotError as exc:
                 print("Feed capture: NOT READY.", exc)
             else:
-                print(f"Feed capture: READY; {status['poi_labels']} mixed-scanner cards; "
-                      f"{len(alerts)} AUROUX XAUUSD alerts currently visible")
+                visible = page.evaluate(EXTRACT_CARDS_JS)
+            gold_count = sum(is_xauusd_card(card) for card in visible)
+            print(f"Feed capture: READY; {status['poi_labels']} mixed-scanner cards; "
+                  f"{gold_count} XAUUSD cards across all scanners; "
+                  f"{len(alerts)} from AUROUX")
         finally:
             context.close()
 
