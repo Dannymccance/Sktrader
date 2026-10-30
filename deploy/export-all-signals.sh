@@ -6,7 +6,7 @@ if [[ "${EUID}" -ne 0 ]]; then
   exit 1
 fi
 OUT="/opt/sktrader/exports/$(date -u +%Y%m%dT%H%M%SZ)"
-install -d -m 0700 "$OUT"
+install -d -o dkmt5c -g dkmt5c -m 0700 "$OUT"
 cd /opt/sktrader
 runuser -u dkmt5c -- /opt/sktrader/.venv/bin/python -m sktrader.export_signals \
   --database /var/lib/dkcapital-mt5-3/.local/share/sktrader/signals.db \
