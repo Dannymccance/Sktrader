@@ -16,6 +16,11 @@ from pathlib import Path
 
 from sktrader.core import Alert, AlertError, EventStore, SnapshotError, auroux_xauusd_card, merge_history_page, parse_card
 
+from sktrader.multi_scanners import (
+    SCANNER_CHANNELS, ScannerStore, discord_card, is_xauusd_card,
+    load_channels, setup_channels,
+)
+
 LOG = logging.getLogger("sktrader")
 DEFAULT_URL = "https://charts.jifulive.com/jifu/dashboard"
 
@@ -361,14 +366,15 @@ def _bot_token(path: Path) -> str:
     return token
 
 
-def _post_discord(config: Config, payload: dict, *, event_id: int | None = None) -> None:
+def _post_discord(config: Config, payload: dict, *, event_id: int | None = None,
+                  channel_id: int | None = None) -> None:
     if event_id is not None:
         # Discord deduplicates the bot's identical nonces for a few minutes.
         # SQLite's durable queue remains the authoritative long-term record.
         payload = {**payload, "nonce": f"sktrader-{event_id}", "enforce_nonce": True}
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(
-        f"https://discord.com/api/v10/channels/{config.discord_channel_id}/messages",
+        f"https://discord.com/api/v10/channels/{channel_id or config.discord_channel_id}/messages",
         data=body,
         headers={
             "Authorization": "Bot " + _bot_token(config.bot_token_file),
@@ -404,6 +410,24 @@ def _alert_embed(event_id: int, observed_at: str, alert: Alert, *, historical: b
         }],
         "allowed_mentions": {"parse": []},
     }
+
+
+def _scanner_channel_map(config: Config) -> dict[str, int]:
+    """Require explicit mapping for all eight scanners before monitoring."""
+    return load_channels(config.profile.parent / "scanner-channels.json",
+                         config.discord_channel_id)
+
+
+def _send_scanner_pending(store: ScannerStore, config: Config, channels: dict[str, int]) -> None:
+    for event_id, signal in store.pending():
+        # Never route a non-XAUUSD signal, even if an unexpected DB row exists.
+        if signal.symbol != "XAUUSD" or signal.scanner not in channels:
+            raise SnapshotError("Non-XAUUSD or unmapped scanner signal in outbox")
+        _post_discord(config, discord_card(signal), event_id=event_id,
+                      channel_id=channels[signal.scanner])
+        store.delivered(event_id)
+        LOG.info("Delivered scanner signal #%s from %s to mapped Discord channel",
+                 event_id, signal.scanner)
 
 
 def _send_pending(store: EventStore, config: Config) -> None:
@@ -521,7 +545,8 @@ def replay_visible(config: Config) -> None:
 
     _secure_profile(config.profile)
     _bot_token(config.bot_token_file)
-    store = EventStore(config.database)
+    store = ScannerStore(config.database)
+    channels = _scanner_channel_map(config)
     with sync_playwright() as playwright:
         viewport, args = browser_geometry()
         context = playwright.chromium.launch_persistent_context(
@@ -546,106 +571,103 @@ def replay_visible(config: Config) -> None:
                     "before reaching the end. Increase it and rerun; "
                     "no historical replay batch has been queued."
                 )
-            count, already_run = store.replay_visible_once(
-                cards, feed_cursor=latest,
-            )
+            count, already_run = store.replay_once(cards, newest=latest)
             if already_run:
-                print("Historical Auroux replay batch was already queued; no new replay scheduled.")
+                print("Historical XAUUSD scanner replay already queued; no duplicate batch created.")
             elif count == 0:
                 print(
-                    f"Found {len(cards)} JIFU cards, but zero AUROUX XAUUSD "
-                    "cards. No historical alerts sent; replay remains available."
+                    f"Found {len(cards)} JIFU cards, but zero XAUUSD cards. "
+                    "No historical signals sent; replay remains available."
                 )
             else:
                 print(
-                    f"Queued {count} historical AUROUX XAUUSD cards for one-time "
-                    f"Discord replay to channel {config.discord_channel_id}."
+                    f"Queued {count} historical XAUUSD scanner cards to their "
+                    "individual Discord channels."
                 )
-            _send_pending(store, config)
-            print("Any queued eligible Discord messages have been processed.")
+            _send_scanner_pending(store, config, channels)
+            print("Queued XAUUSD scanner messages processed.")
         finally:
             context.close()
             store.conn.close()
 
 
 def watch(config: Config) -> None:
+    """Monitor the mixed JIFU Alerts feed; route only XAUUSD by source."""
     from playwright.sync_api import sync_playwright
 
     _secure_profile(config.profile)
-    store = EventStore(config.database)
-    _bot_token(config.bot_token_file)  # Fail at startup if existing DK Capital credentials are unavailable.
-    LOG.info("Starting WATCH-ONLY collector; Discord bot channel=%s; no broker/execution permissions exist",
-             config.discord_channel_id)
+    _bot_token(config.bot_token_file)
+    channels = _scanner_channel_map(config)
+    store = ScannerStore(config.database)
+    LOG.info("Starting XAUUSD-only scanner monitor for %s sources; WATCH ONLY",
+             len(channels))
     with sync_playwright() as playwright:
         viewport, args = browser_geometry()
         context = playwright.chromium.launch_persistent_context(
-            str(config.profile), headless=config.headless, viewport=viewport, args=args,
+            str(config.profile), headless=config.headless,
+            viewport=viewport, args=args,
         )
         try:
             page = context.pages[0] if context.pages else context.new_page()
             page.goto(config.url, wait_until="domcontentloaded", timeout=45000)
             _prepare_page(page)
             failures = 0
-            health_notified = False
             last_selector = None
             while True:
                 started = time.monotonic()
                 try:
                     selector = _sidebar_scanner_state(page)
                     if selector != last_selector:
-                        if selector == "auroux":
-                            LOG.info("JIFU sidebar AUROUX scanner selected")
+                        if selector == "unselected":
+                            LOG.info("JIFU Alerts sidebar unfiltered: monitoring all scanners, XAUUSD only")
                         else:
                             LOG.warning(
-                                "JIFU sidebar scanner state=%s. Select AUROUX in "
-                                "the right-hand Alerts dropdown in VNC. "
-                                "No signals will be baselined or forwarded until restored.",
+                                "Alerts scanner dropdown=%s; set right-hand selector "
+                                "to Select Scanner (no specific scanner) in VNC",
                                 selector,
                             )
                         last_selector = selector
-                    if selector != "auroux":
-                        raise SnapshotError("AUROUX scanner is not selected in Alerts sidebar")
-                    feed_cards = _read_feed_cards(page)
-                    count, baseline = store.observe_auroux_sidebar(feed_cards)
+                    if selector != "unselected":
+                        raise SnapshotError("Mixed-scanner Alerts feed not selected")
+                    cards = _read_feed_cards(page)
+                    new_count, baseline = store.observe(cards)
                     if baseline:
-                        LOG.info(
-                            "AUROUX-only baseline saved: %s visible XAUUSD cards; "
-                            "historical signals not replayed", len(feed_cards)
-                        )
-                    elif count:
-                        LOG.info("Detected %s newly published Auroux XAUUSD cards", count)
-                    _send_pending(store, config)
-                    if health_notified:
-                        _notify_health(config, "Recovered: JIFU Auroux sidebar reading resumed")
+                        LOG.info("Mixed feed baseline: %s existing cards, "
+                                 "%s XAUUSD cards; history not replayed",
+                                 len(cards), sum(is_xauusd_card(card) for card in cards))
+                    elif new_count:
+                        LOG.info("Queued %s new XAUUSD signals for source-specific channels",
+                                 new_count)
+                    _send_scanner_pending(store, config, channels)
                     failures = 0
-                    health_notified = False
                 except Exception as exc:
                     failures += 1
-                    # Do not reload automatically. JIFU reloads can erase its
-                    # scanner dropdown selection and destroy feed overlap.
                     if failures == 1 or failures % 12 == 0:
-                        LOG.warning("Monitor paused (%s consecutive failures): %s: %s",
-                                    failures, type(exc).__name__, str(exc)[:350])
-                    if failures == 3 and not health_notified:
-                        _notify_health(
-                            config,
-                            "Cannot read AUROUX sidebar; select AUROUX > Alerts > All "
-                            "in VNC. No alert feed cursor will advance.",
-                        )
-                        health_notified = True
+                        LOG.warning("Monitor paused (%s failures): %s: %s",
+                                    failures, type(exc).__name__, str(exc)[:240])
+                    # Never reload or click ambiguous scanner controls: the
+                    # app can reset its dropdown and invalidate signal overlap.
                 time.sleep(max(0.2, config.poll_seconds - (time.monotonic() - started)))
         finally:
             context.close()
+            store.conn.close()
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Sktrader JIFU collector (watch-only)")
-    parser.add_argument("command", choices=["login", "diagnose", "watch", "replay-visible"])
+    parser.add_argument("command", choices=["login", "diagnose", "watch", "replay-visible", "setup-channels"])
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    config = Config.from_env(require_discord=args.command in {"watch", "replay-visible"})
+    config = Config.from_env(require_discord=args.command in {"watch", "replay-visible", "setup-channels"})
     with _one_browser_at_a_time(config.profile):
-        if args.command == "login":
+        if args.command == "setup-channels":
+            channels = setup_channels(
+                _bot_token(config.bot_token_file),
+                config.discord_channel_id,
+                config.profile.parent / "scanner-channels.json",
+            )
+            print(f"Discord XAUUSD scanner channels ready: {len(channels)}. No alerts posted.")
+        elif args.command == "login":
             login(config)
         elif args.command == "diagnose":
             diagnose(config)
