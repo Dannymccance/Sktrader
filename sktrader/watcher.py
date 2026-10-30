@@ -595,20 +595,25 @@ def replay_visible(config: Config) -> None:
 
 
 def watch(config: Config) -> None:
-    """Monitor the mixed JIFU Alerts feed; route only XAUUSD by source."""
+    """Monitor all mixed JIFU Alerts; restore lost sessions without resetting dedupe."""
     from playwright.sync_api import sync_playwright
+    from sktrader.recovery import HealthMonitor, login_state, try_login
 
     _secure_profile(config.profile)
     _bot_token(config.bot_token_file)
     channels = _scanner_channel_map(config)
     store = ScannerStore(config.database)
-    LOG.info("Starting XAUUSD-only scanner monitor for %s sources; WATCH ONLY",
-             len(channels))
+    health = HealthMonitor(config)
+    if health.channel and health.channel in channels.values():
+        raise ValueError("JIFU health channel must not be a scanner signal channel")
+    last_coverage_log = 0.0
+    login_file_raw = os.getenv("SKTRADER_JIFU_CREDENTIALS_FILE", "").strip()
+    login_file = Path(login_file_raw) if login_file_raw else None
+    LOG.info("Starting XAUUSD-only scanner monitor for %s sources; WATCH ONLY", len(channels))
     with sync_playwright() as playwright:
         viewport, args = browser_geometry()
         context = playwright.chromium.launch_persistent_context(
-            str(config.profile), headless=config.headless,
-            viewport=viewport, args=args,
+            str(config.profile), headless=config.headless, viewport=viewport, args=args,
         )
         try:
             page = context.pages[0] if context.pages else context.new_page()
@@ -616,40 +621,66 @@ def watch(config: Config) -> None:
             _prepare_page(page)
             failures = 0
             last_selector = None
+            last_reload = 0.0
+            last_login = 0.0
             while True:
                 started = time.monotonic()
                 try:
+                    diagnostic = page.evaluate(DIAG_JS)
+                    state = login_state(diagnostic)
+                    if state == "login":
+                        if login_file and started - last_login >= 120:
+                            last_login = started
+                            LOG.warning("JIFU session expired; attempting guarded credential reauthentication")
+                            if try_login(page, login_file):
+                                _prepare_page(page)
+                            else:
+                                raise SnapshotError("JIFU authentication requires interactive verification")
+                        else:
+                            raise SnapshotError("JIFU logged out; credential file absent or login retry cooling down")
                     selector = _sidebar_scanner_state(page)
                     if selector != last_selector:
                         if selector == "unselected":
                             LOG.info("JIFU Alerts sidebar unfiltered: monitoring all scanners, XAUUSD only")
                         else:
-                            LOG.warning(
-                                "Alerts scanner dropdown=%s; set right-hand selector "
-                                "to Select Scanner (no specific scanner) in VNC",
-                                selector,
-                            )
+                            LOG.warning("Alerts scanner dropdown=%s; monitoring paused until full feed is restored", selector)
                         last_selector = selector
                     if selector != "unselected":
                         raise SnapshotError("Mixed-scanner Alerts feed not selected")
                     cards = _read_feed_cards(page)
                     new_count, baseline = store.observe(cards)
                     if baseline:
-                        LOG.info("Mixed feed baseline: %s existing cards, "
-                                 "%s XAUUSD cards; history not replayed",
+                        LOG.info("Mixed feed baseline: %s existing cards, %s XAUUSD cards; history not replayed",
                                  len(cards), sum(is_xauusd_card(card) for card in cards))
                     elif new_count:
-                        LOG.info("Queued %s new XAUUSD signals for source-specific channels",
-                                 new_count)
+                        LOG.info("Queued %s new XAUUSD signals for source-specific channels", new_count)
                     _send_scanner_pending(store, config, channels)
+                    if started - last_coverage_log >= 3600:
+                        coverage = store.coverage()
+                        LOG.info("JIFU scanner coverage (visible, not guaranteed active): %s",
+                                 json.dumps({name: coverage.get(name, {}) for name in channels}, sort_keys=True))
+                        last_coverage_log = started
                     failures = 0
+                    health.healthy()
                 except Exception as exc:
                     failures += 1
+                    reason = f"{type(exc).__name__}: {str(exc)[:190]}"
+                    health.degraded(reason)
                     if failures == 1 or failures % 12 == 0:
-                        LOG.warning("Monitor paused (%s failures): %s: %s",
-                                    failures, type(exc).__name__, str(exc)[:240])
-                    # Never reload or click ambiguous scanner controls: the
-                    # app can reset its dropdown and invalidate signal overlap.
+                        LOG.warning("Monitor paused (%s failures): %s", failures, reason)
+                    # A transient blank React view often recovers itself. After
+                    # 12 consecutive failed reads, reload at most once per 2
+                    # minutes; preserve the SQLite snapshot for overlap checks.
+                    # Do not overwrite a valid snapshot with an empty page.
+                    if failures >= 12 and started - last_reload >= 120:
+                        last_reload = started
+                        try:
+                            LOG.warning("Reloading stalled JIFU dashboard after sustained feed failures")
+                            page.goto(config.url, wait_until="domcontentloaded", timeout=45000)
+                            _prepare_page(page)
+                            last_selector = None
+                        except Exception as reload_exc:
+                            LOG.warning("JIFU recovery reload failed: %s", type(reload_exc).__name__)
                 time.sleep(max(0.2, config.poll_seconds - (time.monotonic() - started)))
         finally:
             context.close()

@@ -150,6 +150,10 @@ class ScannerStore:
             "payload TEXT NOT NULL, delivered_at TEXT)"
         )
         self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS scanner_coverage "
+            "(scanner TEXT PRIMARY KEY, last_seen_at TEXT NOT NULL, last_signal_at TEXT)"
+        )
+        self.conn.execute(
             "CREATE TABLE IF NOT EXISTS scanner_history_replay "
             "(id INTEGER PRIMARY KEY CHECK(id=1), queued_at TEXT NOT NULL, count INTEGER NOT NULL)"
         )
@@ -175,8 +179,27 @@ class ScannerStore:
                     eligible.append(replace(parse_scanner_card(cards[i]), observed_at=now))
                 except AlertError as exc:
                     raise SnapshotError("Unparseable new XAUUSD scanner signal") from exc
+        observed_scanners = set()
+        for card in cards:
+            heading = re.sub(r"\\s+", " ", card.strip()).upper()
+            for alias, canonical in SCANNER_ALIASES.items():
+                if heading.startswith(alias + " ") and canonical in SCANNER_CHANNELS:
+                    observed_scanners.add(canonical)
+                    break
         with self.conn:
+            for scanner in observed_scanners:
+                self.conn.execute(
+                    "INSERT INTO scanner_coverage(scanner,last_seen_at) VALUES(?,?) "
+                    "ON CONFLICT(scanner) DO UPDATE SET last_seen_at=excluded.last_seen_at",
+                    (scanner, now),
+                )
             for signal in eligible:
+                self.conn.execute(
+                    "INSERT INTO scanner_coverage(scanner,last_seen_at,last_signal_at) VALUES(?,?,?) "
+                    "ON CONFLICT(scanner) DO UPDATE SET last_seen_at=excluded.last_seen_at, "
+                    "last_signal_at=excluded.last_signal_at",
+                    (signal.scanner, now, now),
+                )
                 self.conn.execute(
                     "INSERT INTO scanner_events(observed_at,payload) VALUES(?,?)",
                     (now, json.dumps(asdict(signal), sort_keys=True)),
@@ -219,6 +242,13 @@ class ScannerStore:
                 (json.dumps(current),),
             )
         return len(eligible), False
+
+    def coverage(self) -> dict[str, dict[str, str | None]]:
+        rows = self.conn.execute(
+            "SELECT scanner,last_seen_at,last_signal_at FROM scanner_coverage"
+        ).fetchall()
+        return {name: {"last_seen_at": seen, "last_signal_at": issued}
+                for name, seen, issued in rows}
 
     def pending(self) -> list[tuple[int, ScannerSignal]]:
         rows = self.conn.execute(
