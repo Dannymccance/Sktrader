@@ -1,5 +1,7 @@
 import json
 import os
+import sys
+import types
 import tempfile
 import unittest
 from pathlib import Path
@@ -57,7 +59,8 @@ class RecoveryTests(unittest.TestCase):
             username.count.return_value = 1
             button = form.get_by_role.return_value
             button.count.return_value = 1
-            self.assertTrue(try_login(page, path))
+            with patch.dict(sys.modules, {"playwright.sync_api": types.SimpleNamespace(TimeoutError=TimeoutError)}):
+                self.assertTrue(try_login(page, path))
             username.fill.assert_called_once_with("danny1888")
             password.fill.assert_called_once_with("secret")
             button.click.assert_called_once()
@@ -70,7 +73,8 @@ class RecoveryTests(unittest.TestCase):
             page = MagicMock()
             page.locator.return_value.count.return_value = 2
             with self.assertRaisesRegex(RuntimeError, "Ambiguous"):
-                try_login(page, path)
+                with patch.dict(sys.modules, {"playwright.sync_api": types.SimpleNamespace(TimeoutError=TimeoutError)}):
+                    try_login(page, path)
             page.locator.return_value.fill.assert_not_called()
 
     def test_health_delivery_failure_does_not_crash_watcher(self):
