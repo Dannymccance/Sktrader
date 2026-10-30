@@ -154,10 +154,10 @@ class BrokerStore:
         stamp=datetime.fromtimestamp(a[4],timezone.utc)
         if (datetime.now(timezone.utc)-stamp).total_seconds()>120:
             raise ValueError("stale broker account telemetry")
-        summary=(f"**Broker verified DEMO account** {a[0]} | {a[3]}\\n"
-                 f"Balance: **£{amount(a[5]):,.2f}** | Equity: **£{amount(a[6]):,.2f}**\\n"
-                 f"Floating: £{amount(a[9]):,.2f} | Margin: £{amount(a[7]):,.2f}\\n"
-                 f"Free margin: £{amount(a[8]):,.2f} | Positions: {a[10]} | Orders: {a[11]}\\n"
+        summary=(f"**Broker verified DEMO account** {a[0]} | {a[3]}\n"
+                 f"Balance: **£{amount(a[5]):,.2f}** | Equity: **£{amount(a[6]):,.2f}**\n"
+                 f"Floating: £{amount(a[9]):,.2f} | Margin: £{amount(a[7]):,.2f}\n"
+                 f"Free margin: £{amount(a[8]):,.2f} | Positions: {a[10]} | Orders: {a[11]}\n"
                  f"Snapshot: {stamp.isoformat()}")
         active=self.db.execute("SELECT ticket,symbol,type,volume,price_open,sl,tp,"
                                "profit FROM demo_positions ORDER BY ticket").fetchall()
@@ -167,7 +167,7 @@ class BrokerStore:
                            "value":f"{'BUY' if kind==0 else 'SELL'} {volume} lot @ {entry} | SL {sl} | TP {tp} | Floating £{amount(profit):,.2f}",
                            "inline":False})
         return {"embeds":[{"title":"DK Capital | AUROUX MT5 Demo (BROKER VERIFIED)",
-                            "description":summary.replace("\\n","\n"),
+                            "description":summary.replace("\n","\n"),
                             "fields":fields,
                             "color":3066993}],
                 "allowed_mentions":{"parse":[]}}
@@ -199,10 +199,10 @@ class BrokerStore:
     def weekly_embed(self, now=None):
         s=self.weekly_summary(now)
         return {"embeds":[{"title":f"AUROUX Demo | Week {s['year']}-W{s['week']:02d} (BROKER DEALS)",
-                           "description":(f"GBP gross realized: £{s['gross_gbp']:,.2f}\\n"
-                                          f"Commission/swap/fees: £{s['costs_gbp']:,.2f}\\n"
-                                          f"Net from exported deal records: **£{s['net_gbp']:,.2f}**\\n"
-                                          f"Deals: {s['deals']} | Closing deal segments: {s['closing_deal_segments']}\\n"
+                           "description":(f"GBP gross realized: £{s['gross_gbp']:,.2f}\n"
+                                          f"Commission/swap/fees: £{s['costs_gbp']:,.2f}\n"
+                                          f"Net from exported deal records: **£{s['net_gbp']:,.2f}**\n"
+                                          f"Deals: {s['deals']} | Closing deal segments: {s['closing_deal_segments']}\n"
                                           "Provisional: MT5 exporter includes 7 days of deal history; "
                                           "not a complete independent trade reconciliation."),
                            "color":3066993}],
@@ -256,7 +256,7 @@ def run():
     if any(not x.isdigit() or len(x)<15 for x in
            (args.dashboard_channel,args.confirmations_channel,args.results_channel)):
         p.error("exact Discord destination IDs required")
-    if any(x and (not x.isdigit() or len(x)<15) for x in (args.weekly_channel,args.alerts_channel))
+    if any(x and (not x.isdigit() or len(x)<15) for x in (args.weekly_channel,args.alerts_channel)):
         p.error("exact Discord destination IDs required")
     if args.token_file.stat().st_mode & (stat.S_IRWXG|stat.S_IRWXO):
         p.error("bot token file must be owner-only")
@@ -269,9 +269,9 @@ def run():
             store.ingest(args.common)
             for ticket,kind,symbol,vol,price,profit,comm,swap,fee,stamp,order,position in store.pending():
                 ch=args.confirmations_channel if kind=="BROKER_FILL" else args.results_channel
-                payload={"content":(f"**AUROUX {kind.replace('_',' ')} | BROKER VERIFIED DEMO**\\n"
-                                    f"Deal #{ticket} | Order #{order} | Position #{position}\\n"
-                                    f"{symbol} {vol} lots @ {price}\\n"
+                payload={"content":(f"**AUROUX {kind.replace('_',' ')} | BROKER VERIFIED DEMO**\n"
+                                    f"Deal #{ticket} | Order #{order} | Position #{position}\n"
+                                    f"{symbol} {vol} lots @ {price}\n"
                                     f"Realized £{profit} | Commission £{comm} | Swap £{swap} | Fee £{fee}"),
                          "allowed_mentions":{"parse":[]},
                          "nonce":f"auroux-broker-{ticket}","enforce_nonce":True}
