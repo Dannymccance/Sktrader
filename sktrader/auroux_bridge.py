@@ -83,7 +83,7 @@ def export_lines(connection: sqlite3.Connection) -> list[str]:
             # Never silently substitute missing levels.
             print(f"Skipping AUROUX event {identifier}: {exc}", flush=True)
             continue
-        result.append(f"{int(identifier)};{side};{poi:.8f};{sl:.8f};{tp:.8f}\n")
+        result.append(f"{int(identifier)};{side};{poi:.8f};{sl:.8f};{tp:.8f};{deadline}\n")
     return result
 
 
