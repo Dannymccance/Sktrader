@@ -30,6 +30,32 @@ def feed_fingerprint(text: str) -> str:
     return hashlib.sha256(compact.encode("utf-8")).hexdigest()
 
 
+def merge_history_page(archive: list[str], page: list[str]) -> list[str]:
+    """Append older cards from a partially overlapping virtualised sidebar.
+
+    Both arrays are newest first. Preserve repeated, identical-price card
+    occurrences: do not use a set of hashes, which would discard signals.
+    """
+    if not archive or not page:
+        raise SnapshotError("Cannot reconcile empty scanner history")
+    old = [feed_fingerprint(card) for card in archive]
+    recent = [feed_fingerprint(card) for card in page]
+    if old == recent:
+        return archive
+    # The page may render *all* previously accumulated cards plus older ones.
+    for overlap in range(min(len(old), len(recent)), 1, -1):
+        if old[-overlap:] == recent[:overlap]:
+            return archive + page[overlap:]
+    # If no older content has loaded yet, the new visible subset may be fully
+    # contained inside already captured history.
+    for offset in range(len(old) - len(recent) + 1):
+        if old[offset:offset + len(recent)] == recent:
+            return archive
+    # We require at least two overlapping cards to avoid confusing multiple
+    # independent signals that happen to share exactly the same price levels.
+    raise SnapshotError("Historical Alerts pages changed without two-card overlap")
+
+
 def auroux_xauusd_card(text: str) -> bool:
     """Source and symbol must match; never forward WOLFX/XAUUSD as Auroux."""
     return bool(re.match(r"\s*AUROUX\b", text, re.I)
@@ -235,7 +261,8 @@ class EventStore:
         return len(eligible), previous is None
 
     def replay_visible_once(
-        self, cards: list[str], *, timeframe: str, levels: frozenset[int]
+        self, cards: list[str], *, timeframe: str, levels: frozenset[int],
+        feed_cursor: list[str] | None = None,
     ) -> tuple[int, bool]:
         """Queue one historical batch of visible AUROUX XAUUSD cards.
 
@@ -270,7 +297,12 @@ class EventStore:
             if (timeframe == "ALL" or timeframe == alert.timeframe) and alert.level in levels:
                 eligible.append(alert)
 
-        current = [feed_fingerprint(card) for card in cards]
+        # History may be virtualised and include older cards that are no
+        # longer in the live top-of-feed window. Keep the live cursor at the
+        # first/latest page so normal monitoring does not replay the archive.
+        current = [feed_fingerprint(card) for card in (feed_cursor if feed_cursor is not None else cards)]
+        if not current:
+            raise SnapshotError("Cannot store an empty current-feed cursor")
         now = datetime.now(timezone.utc).isoformat()
         with self.conn:
             if eligible:
