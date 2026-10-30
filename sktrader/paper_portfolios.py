@@ -89,11 +89,13 @@ class PaperPortfolios:
           event_id INTEGER PRIMARY KEY, scanner TEXT NOT NULL, side TEXT,
           poi TEXT, sl TEXT, tp TEXT, expiry TEXT, state TEXT NOT NULL,
           reason TEXT, entry_time TEXT, entry_price TEXT, lots TEXT,
-          exit_time TEXT, exit_price TEXT, net_pnl TEXT);
+          exit_time TEXT, exit_price TEXT, net_pnl TEXT, observed_at TEXT);
         CREATE TABLE IF NOT EXISTS quotes (
           seq INTEGER PRIMARY KEY AUTOINCREMENT, stamp TEXT NOT NULL,
           bid TEXT NOT NULL, ask TEXT NOT NULL);
         """)
+        if "observed_at" not in [x[1] for x in self.db.execute("PRAGMA table_info(paper_signals)")]:
+            self.db.execute("ALTER TABLE paper_signals ADD COLUMN observed_at TEXT")
         for scanner in SCANNERS:
             self.db.execute("INSERT OR IGNORE INTO portfolios VALUES (?,?,?)",
                             (scanner, str(START_USD), "0"))
@@ -129,8 +131,8 @@ class PaperPortfolios:
         with self.db:
             self.db.execute(
                 "INSERT OR IGNORE INTO paper_signals "
-                "(event_id,scanner,side,poi,sl,tp,expiry,state,reason) "
-                "VALUES (?,?,?,?,?,?,?,?,?)", (event_id, *values))
+                "(event_id,scanner,side,poi,sl,tp,expiry,state,reason,observed_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)", (event_id, *values, now.isoformat()))
         return self.db.execute("SELECT state FROM paper_signals WHERE event_id=?",
                                (event_id,)).fetchone()[0]
 
@@ -173,9 +175,11 @@ class PaperPortfolios:
                                 "realized=CAST(realized AS REAL)+? WHERE scanner=?",
                                 (float(net), float(net), scanner))
             pending = self.db.execute(
-                "SELECT event_id,scanner,side,poi,sl,tp,expiry FROM paper_signals "
+                "SELECT event_id,scanner,side,poi,sl,tp,expiry,observed_at FROM paper_signals "
                 "WHERE state='PENDING' ORDER BY event_id").fetchall()
-            for event_id, scanner, side, poi, sl, tp, expiry in pending:
+            for event_id, scanner, side, poi, sl, tp, expiry, signal_time in pending:
+                if signal_time and stamp < timestamp(signal_time):
+                    continue
                 if stamp >= timestamp(expiry):
                     self.db.execute("UPDATE paper_signals SET state='EXPIRED' WHERE event_id=?",
                                     (event_id,))
