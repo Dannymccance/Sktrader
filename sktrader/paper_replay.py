@@ -1,0 +1,215 @@
+"""Read-only paper replay with durable signal/order/fill audit and Discord outbox.
+
+This never submits MT5 orders. Signal acceptance is bounded by detected time
+and scanner-relative source age; market tick processing is strictly ordered.
+"""
+from __future__ import annotations
+import argparse
+from datetime import datetime, timezone, timedelta
+import json
+import os
+from pathlib import Path
+import sqlite3
+import time
+import urllib.request
+import urllib.error
+
+from sktrader.market_feed import MarketFeed
+from sktrader.paper_portfolios import PaperPortfolios, SCANNERS, timestamp
+
+DEFAULT_CHANNEL = "1565846495578558526"
+
+
+def source_age_seconds(text):
+    words = str(text).strip().lower().split()
+    if text == "just now":
+        return 0
+    if len(words) != 3 or words[2] != "ago":
+        return None
+    try:
+        n = 1 if words[0] in ("a", "an") else int(words[0])
+    except ValueError:
+        return None
+    unit = words[1].rstrip("s")
+    return n * {"second":1, "minute":60, "hour":3600, "day":86400,
+                "week":604800}.get(unit, 10**9)
+
+
+class PaperReplay:
+    def __init__(self, signal_db: Path, market_db: Path, paper_db: Path, *, bootstrap=True):
+        self.signals = sqlite3.connect(f"file:{signal_db}?mode=ro", uri=True)
+        self.market = sqlite3.connect(f"file:{market_db}?mode=ro", uri=True)
+        self.engine = PaperPortfolios(paper_db)
+        self.engine.db.executescript("""
+            CREATE TABLE IF NOT EXISTS replay_state(
+              key TEXT PRIMARY KEY, value INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS paper_audit(
+              id INTEGER PRIMARY KEY AUTOINCREMENT, event_id INTEGER NOT NULL,
+              scanner TEXT NOT NULL, kind TEXT NOT NULL, recorded_at TEXT NOT NULL,
+              detail TEXT NOT NULL,
+              UNIQUE(event_id,kind));
+            CREATE TABLE IF NOT EXISTS discord_outbox(
+              audit_id INTEGER PRIMARY KEY, sent_at TEXT,
+              FOREIGN KEY(audit_id) REFERENCES paper_audit(id));
+        """)
+        with self.engine.db:
+            if self._state("signal_cursor") is None:
+                cursor = self.signals.execute("SELECT COALESCE(MAX(id),0) FROM scanner_events").fetchone()[0] if bootstrap else 0
+                self._set_state("signal_cursor", cursor)
+            if self._state("tick_cursor") is None:
+                cursor = self.market.execute("SELECT COALESCE(MAX(rowid),0) FROM feed_ticks").fetchone()[0] if bootstrap else 0
+                self._set_state("tick_cursor", cursor)
+
+    def _state(self, key):
+        row = self.engine.db.execute("SELECT value FROM replay_state WHERE key=?", (key,)).fetchone()
+        return row[0] if row else None
+
+    def _set_state(self, key, value):
+        self.engine.db.execute("INSERT INTO replay_state(key,value) VALUES (?,?) "
+                               "ON CONFLICT(key) DO UPDATE SET value=excluded.value",(key,value))
+
+    def _audit(self, event_id, scanner, kind, detail, stamp):
+        self.engine.db.execute("INSERT OR IGNORE INTO paper_audit "
+                               "(event_id,scanner,kind,recorded_at,detail) VALUES (?,?,?,?,?)",
+                               (event_id,scanner,kind,stamp,json.dumps(detail,sort_keys=True)))
+        row=self.engine.db.execute("SELECT id FROM paper_audit WHERE event_id=? AND kind=?",
+                                   (event_id,kind)).fetchone()
+        self.engine.db.execute("INSERT OR IGNORE INTO discord_outbox(audit_id) VALUES (?)",(row[0],))
+
+    def tick(self, now=None):
+        now=datetime.now(timezone.utc) if now is None else timestamp(now)
+        # Source feed is trusted only for this demo profile. Paper calculations use
+        # USD XAUUSD quote/contract conventions, NOT the GBP account tick_value.
+        ident=self.market.execute("SELECT login,mode,currency,symbol,contract_size,generated_at "
+                                  "FROM feed_identity WHERE id=1").fetchone()
+        if not ident or ident[1]!="DEMO" or ident[3]!="XAUUSD" or str(ident[4])!="100.0000":
+            raise RuntimeError("broker identity/contract unverified")
+        if (now-datetime.fromtimestamp(ident[5],tz=timezone.utc)).total_seconds() > 120:
+            raise RuntimeError("broker identity stale")
+        # Collect newly detected signals. Historical records are never replayed
+        # on the initial service activation.
+        for eid,observed,payload in self.signals.execute(
+            "SELECT id,observed_at,payload FROM scanner_events WHERE id>? ORDER BY id",
+            (self._state("signal_cursor"),)):
+            signal=json.loads(payload)
+            scanner=signal.get("scanner")
+            with self.engine.db:
+                if scanner in SCANNERS:
+                    age=source_age_seconds(signal.get("relative_age",""))
+                    observed_dt=timestamp(observed)
+                    if age is None or age>=180:
+                        state="SKIPPED"
+                        self.engine.accept(eid,{**signal,"observed_at":observed},expires_at=observed)
+                    else:
+                        expiry=observed_dt + timedelta(seconds=180-age)
+                        state=self.engine.accept(eid,{**signal,"observed_at":observed},
+                                                 expires_at=expiry.isoformat())
+                    self._audit(eid,scanner,"SIGNAL_RECEIVED",
+                                {"side":signal.get("side"),"fields":signal.get("fields"),
+                                 "observed_at":observed,"relative_age":signal.get("relative_age")},
+                                observed)
+                    if state!="PENDING":
+                        self._audit(eid,scanner,"SIGNAL_"+state,
+                                    {"state":state,"reason":"invalid, missing levels or aged signal"},
+                                    now.isoformat())
+                    else:
+                        self._audit(eid,scanner,"ORDER_PENDING",
+                                    {"status":"paper only, awaiting executable bid/ask"},
+                                    now.isoformat())
+                self._set_state("signal_cursor",eid)
+        # Only post-activation quote ticks. Do not create retroactive wins.
+        query=("SELECT rowid,time_msc,bid,ask FROM feed_ticks WHERE rowid>? "
+               "ORDER BY rowid LIMIT 2000")
+        rows=self.market.execute(query,(self._state("tick_cursor"),)).fetchall()
+        for rid,stamp_ms,bid,ask in rows:
+            stamp=datetime.fromtimestamp(stamp_ms/1000,tz=timezone.utc)
+            # Refuse old quotes and excessive spread; do not advance tick cursor
+            # for out-of-order arrivals as these need explicit operator review.
+            last=self.engine.db.execute("SELECT stamp FROM quotes ORDER BY seq DESC LIMIT 1").fetchone()
+            if last and stamp <= timestamp(last[0]):
+                raise RuntimeError("out-of-order tick feed; stop paper replay")
+            with self.engine.db:
+                if (now-stamp).total_seconds() > 30 or (float(ask)-float(bid)) > 1.50:
+                    self._set_state("tick_cursor",rid)
+                    continue
+                before={r[0]:r[1] for r in self.engine.db.execute(
+                    "SELECT event_id,state FROM paper_signals WHERE state IN ('OPEN','PENDING')")}
+                self.engine.on_quote(observed_at=stamp.isoformat(),bid=bid,ask=ask)
+                for eid,previous in before.items():
+                    row=self.engine.db.execute(
+                        "SELECT scanner,state,entry_price,exit_price,lots,net_pnl FROM paper_signals "
+                        "WHERE event_id=?", (eid,)).fetchone()
+                    if row and row[1]!=previous:
+                        scanner,state,entry,exit_price,lots,pnl=row
+                        kind=({"OPEN":"PAPER_FILLED","TP1":"PAPER_CLOSED_TP1",
+                               "SL":"PAPER_CLOSED_SL","EXPIRED":"ORDER_EXPIRED",
+                               "SKIPPED":"ORDER_SKIPPED"}.get(state,"STATE_"+state))
+                        self._audit(eid,scanner,kind,
+                                    {"prior":previous,"state":state,"entry":entry,
+                                     "exit":exit_price,"lots":lots,"net_pnl_usd":pnl,
+                                     "market_time":stamp.isoformat()},now.isoformat())
+                self._set_state("tick_cursor",rid)
+        return len(rows)
+
+    def pending_notifications(self):
+        return list(self.engine.db.execute(
+            "SELECT a.id,a.event_id,a.scanner,a.kind,a.recorded_at,a.detail "
+            "FROM paper_audit a JOIN discord_outbox o ON o.audit_id=a.id "
+            "WHERE o.sent_at IS NULL ORDER BY a.id LIMIT 100"))
+
+    def mark_sent(self, audit_id):
+        with self.engine.db:
+            self.engine.db.execute("UPDATE discord_outbox SET sent_at=? WHERE audit_id=?",
+                                   (datetime.now(timezone.utc).isoformat(),audit_id))
+
+
+def notify_discord(channel, token, event):
+    aid,eid,scanner,kind,stamp,detail=event
+    fields=json.loads(detail)
+    text=f"**{scanner} | {kind.replace('_',' ')} | SIMULATED**\nSignal #{eid}\n"
+    text+= "\n".join(f"{k}: {str(v)[:350]}" for k,v in fields.items())
+    req=urllib.request.Request(
+        f"https://discord.com/api/v10/channels/{channel}/messages",
+        data=json.dumps({"content":text[:1900],
+                         "allowed_mentions":{"parse":[]},
+                         "nonce":f"sktrader-paper-{aid}","enforce_nonce":True}).encode(),
+        headers={"Authorization":"Bot "+token,"Content-Type":"application/json",
+                 "User-Agent":"sktrader-paper-replay/1.0"},method="POST")
+    with urllib.request.urlopen(req,timeout=12) as response:
+        if response.status != 200:
+            raise RuntimeError(f"Discord response {response.status}")
+
+
+def main():
+    p=argparse.ArgumentParser()
+    p.add_argument("--signals",type=Path,required=True)
+    p.add_argument("--market",type=Path,required=True)
+    p.add_argument("--paper",type=Path,required=True)
+    p.add_argument("--common",type=Path,required=True)
+    p.add_argument("--expected-login",type=int,required=True)
+    p.add_argument("--token-file",type=Path,required=True)
+    p.add_argument("--channel",default=DEFAULT_CHANNEL)
+    p.add_argument("--interval",type=float,default=1)
+    args=p.parse_args()
+    if args.interval<0.25 or not args.channel.isascii() or not args.channel.isdigit():
+        p.error("bad interval/channel")
+    import stat
+    if args.token_file.stat().st_mode & (stat.S_IRWXG|stat.S_IRWXO):
+        p.error("token file must be owner-only")
+    token=args.token_file.read_text().strip()
+    feed=MarketFeed(args.market,expected_login=args.expected_login)
+    replay=PaperReplay(args.signals,args.market,args.paper)
+    while True:
+        try:
+            feed.ingest(args.common)
+            replay.tick()
+            for event in replay.pending_notifications():
+                notify_discord(args.channel,token,event)
+                replay.mark_sent(event[0])
+        except (OSError,ValueError,RuntimeError,sqlite3.Error,urllib.error.URLError) as exc:
+            print("paper replay paused:",str(exc)[:240],flush=True)
+        time.sleep(args.interval)
+
+
+if __name__=="__main__":
+    main()
