@@ -516,6 +516,33 @@ class BrowserDiagnosticsTests(unittest.TestCase):
             _read_alerts(Page())
 
 
+class OnlySignalMessagesTests(unittest.TestCase):
+    def test_live_pending_event_posts_one_card_without_filtering_50_pips(self):
+        from sktrader.watcher import _send_pending
+        with tempfile.TemporaryDirectory() as folder:
+            store = EventStore(Path(folder) / "signals.db")
+            cards = [BUY.replace("250 pips", "50 pips"), SELL]
+            self.assertEqual(store.replay_visible_once(cards), (2, False))
+            config = Config.from_env(require_discord=False)
+            with patch("sktrader.watcher._post_discord") as post:
+                _send_pending(store, config)
+            self.assertEqual(post.call_count, 2)
+            payloads = [call.args[1] for call in post.call_args_list]
+            self.assertEqual({payload["embeds"][0]["fields"][-1]["value"]
+                              for payload in payloads}, {"50 pips", "250 pips"})
+            self.assertTrue(all("content" not in payload for payload in payloads))
+            self.assertEqual(store.pending(), [])
+            store.conn.close()
+
+    def test_health_notification_goes_only_to_logs(self):
+        from sktrader.watcher import _notify_health
+        config = Config.from_env(require_discord=False)
+        with patch("sktrader.watcher._post_discord") as post:
+            with self.assertLogs("sktrader", level="ERROR"):
+                _notify_health(config, "Collector unable to read")
+            post.assert_not_called()
+
+
 class ExistingDiscordBotTests(unittest.TestCase):
     def test_delivery_uses_bot_identity_and_exact_channel(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -598,7 +625,7 @@ class ParserTests(unittest.TestCase):
         self.assertIn("XAUUSD", card["description"])
         self.assertIn("5M - SELL", card["description"])
         self.assertEqual([f["name"] for f in card["fields"]],
-                         ["Point of Interest", "Invalidation", "Exit 1", "Exit 2", "Level"])
+                         ["Point of Interest", "Invalidation", "Exit1", "Exit2", "Level"])
         self.assertNotIn("footer", card)
         self.assertEqual(x["allowed_mentions"]["parse"], [])
 
