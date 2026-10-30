@@ -1,115 +1,91 @@
 # Sktrader
 
-Minimal JIFU scanner monitoring for DK Capital: **JIFU Auroux Alerts -> Python/Playwright -> SQLite -> Discord**.
+JIFU **XAUUSD-only** Alerts collector. It reads the mixed, unfiltered JIFU
+Alerts sidebar in one persistent Chromium session, identifies the scanner
+that published each card, and sends the original signal fields to a
+**separate Discord channel per scanner** using the existing DK Capital bot.
 
-**Milestone 1 is WATCH ONLY. The repository contains no MT5 order placement, broker keys or live trade permission.**
+**Watch-only. No MT5, broker credentials, trading decisions or order placement.**
+All other symbols (BTCUSDT, XAGUSD, NAS100USD, USDJPY, etc.) are ignored.
 
-## What it does
+## Sources and destinations
 
-- Keeps an authenticated Chromium session on the existing VPS.
-- Requires the right-hand JIFU **Alerts** sidebar to have **AUROUX SCANNER** explicitly selected, with **All** highlighted. Does not modify the selection or reload the page automatically. Reads and forwards only AUROUX XAUUSD.
-- Validates the source AUROUX, XAUUSD, BUY/SELL, timeframe, point of interest, invalidation, exits and level. No timeframe or level is excluded.
-- Saves a baseline on first launch, so old alerts are not posted as new trades.
-- Detects new AUROUX XAUUSD cards using a dedicated Auroux-only ordered snapshot. Existing mixed-provider baselines are kept separate so changing UI filters cannot silently overwrite Auroux monitoring history.
-- Records alerts and Discord delivery status in SQLite for restart recovery.
-- Sends **only** the source Auroux card fields to the existing DK Capital Discord bot. No extra commentary, timestamps, event IDs, or health messages are sent to that channel.
-- Fails closed on missing or malformed alerts and warns on repeated read failures.
-
-## Install on VPS
-
-Run as the SAME Linux user that owns the VNC desktop:
-
-```bash
-git clone https://github.com/Dannymccance/Sktrader.git /opt/sktrader
-cd /opt/sktrader
-git switch feat/jifu-auroux-collector
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-.venv/bin/python -m playwright install chromium
-cp .env.example .env
-chmod 600 .env
-```
-
-If Chromium reports missing system libraries, install the distribution's Playwright browser dependencies. Edit `.env` locally with the existing DK Capital Discord channel ID, secure bot-token file path and browser paths. Never commit JIFU cookies, login credentials, Discord bot tokens or the browser profile to GitHub. The repository is **public**.
-
-### Log in through VNC
-
-In a terminal on the VNC desktop:
-
-```bash
-cd /opt/sktrader
-set -a; . ./.env; set +a
-.venv/bin/python -m sktrader login
-```
-
-Log in manually in the opened Chromium window, select the **Auroux** scanner, open **Alerts**, choose **All**, and press Enter in the terminal to close the browser and save the session.
-
-### JIFU scanner selector unexpectedly changes
-
-The top-left **Select Scanner** on the chart and the right-hand
-**Preferred Customer > scanner dropdown** are different controls.
-Only the latter determines which source is displayed inside the
-Alerts sidebar. From the VNC session on display `:155`, ensure that
-the right-hand dropdown says **AUROUX SCANNER** and the timeframe bar
-highlights **All**.
-
-JIFU can reset its dropdown on reload or app reinitialisation.
-Sktrader previously tried to click ambiguously named "All" controls
-and reloaded the page after repeated errors. This version deliberately
-**does neither**. It checks the right-hand scanner header before
-accepting any alert feed data:
-
-- `auroux`: read the complete Auroux XAUUSD feed and deliver only new cards.
-- `unselected`: pause, preserve the last trusted scanner snapshot and
-  log a request for manual selection in VNC. No Discord messages are sent.
-- `unknown`: pause rather than assume the source.
-- `auroux` with non-Auroux feed cards: fail closed and keep the
-  existing snapshot until the website finishes updating the UI.
-
-Keep `SKTRADER_HEADLESS=false` while you test the live scanner selector.
-Once the UI is stable, headless operation may be re-enabled, but the
-right-hand scanner must still be selected on every new page load. The
-current implementation **does not automatically reselect AUROUX**,
-because the authenticated scanner dropdown's menu structure has not
-been verified and selecting the wrong option could produce missed
-alerts. If it still resets with Sktrader stopped, that is likely a
-JIFU application/session issue, not a collector interaction.
-
-## Monitor
-
-```bash
-cd /opt/sktrader
-set -a; . ./.env; set +a
-.venv/bin/python -m sktrader watch
-```
-
-The initial log should report `AUROUX-only baseline saved: N visible XAUUSD cards`. If the sidebar selector is unselected, the collector pauses and **does not baseline anything**. Historical cards are intentionally not sent by the live watcher. Manual `replay-visible` is the separate one-time path. New cards produce Discord notifications. Run `python -m unittest discover -s tests -v` for offline tests.
-
-After a successful interactive test, install the example systemd service at `deploy/sktrader.service.example`, substituting the actual Linux user and paths. Only one process may use the browser profile at once.
-
-## Configuration
-
-| Variable | Default |
+| Scanner in JIFU | Discord channel |
 |---|---|
-| `SKTRADER_POLL_SECONDS` | `5` |
-| `SKTRADER_TIMEFRAME`, `SKTRADER_LEVELS` | Obsolete legacy settings; ignored even if present in an existing `.env` |
-| `SKTRADER_HEADLESS` | `true` |
-| `SKTRADER_DISCORD_CHANNEL_ID` | Existing DK Capital Discord bot destination, `1565508564775075981` |
-| `SKTRADER_DISCORD_BOT_TOKEN_FILE` | Private local file containing existing bot token, readable only by the Sktrader Linux user |
-| `SKTRADER_BROWSER_PROFILE` | Local persistent browser state |
-| `SKTRADER_DATABASE` | Local SQLite alert journal |
+| AUROUX | Existing channel ID `1565508564775075981` |
+| QUANTUM | `#xauusd-quantum` |
+| TREND WAVE | `#xauusd-trend-wave` |
+| NEXUS | `#xauusd-nexus` |
+| SNIPER PRO / SNIPERPRO | `#xauusd-sniper-pro` |
+| WOLF X / WOLFX | `#xauusd-wolf-x` |
+| HARMONICS | `#xauusd-harmonics` |
+| PRIME | `#xauusd-prime` |
 
-## One-time historical replay of the currently loaded alert cards
+The bot posts **one card per new signal**, even for matching prices across
+different scanners or timeframes. It includes source, display age, XAUUSD,
+timeframe/direction and the signal's actual displayed labels/values.
+Different scanners may have extra exits or zone data. Absent fields are
+**not invented**. No health chatter goes to the signal channels.
 
-The normal `watch` command intentionally baselines older cards without
-posting them. To send **currently loaded** AUROUX XAUUSD cards to Discord
-once, use `python -m sktrader replay-visible` under the **same environment
-and Linux user as watch**. This command is manual, never runs automatically
-on service startup, and does not place any trades.
+## JIFU configuration
 
-**Stop `watch` using Ctrl+C before replaying.** The profile-wide lock will
-reject simultaneous `login`, `watch`, `diagnose` and `replay-visible`.
-Run the following from your existing VPS root SSH terminal:
+In the **right-hand Alerts sidebar**, leave the scanner dropdown at
+**Select Scanner** (unfiltered), not AUROUX or another individual scanner.
+Choose the **All** timeframe filter. The top-left scanner selector on
+the chart is unrelated.
+
+A scanner selection change makes the watcher **pause without advancing**
+its snapshot, rather than silently skip other scanners. The watcher
+does not click source dropdowns or reload JIFU automatically.
+
+## VPS setup
+
+Sktrader is on `/opt/sktrader` on the existing Ubuntu VPS. Before
+updating, stop the current `sktrader watch` process with Ctrl+C. **Do not
+restart MT5, DK Capital services or Docker.**
+
+```bash
+cd /opt/sktrader
+git pull --ff-only origin main
+```
+
+The existing bot token file stays in
+`/var/lib/dkcapital-mt5-3/.local/share/sktrader/discord-bot-token`,
+owner-only mode, and must never be pasted into chat or committed to GitHub.
+The AUROUX channel remains
+`SKTRADER_DISCORD_CHANNEL_ID=1565508564775075981` in `.env`.
+
+### Create scanner channels once
+
+The bot must have **Manage Channels** permission in the same Discord server
+as AUROUX. The following command reads the AUROUX channel's server/category,
+reuses any existing exact-name channels in that category and creates only
+the seven missing text channels. It does not send alerts or alter DK
+Capital services.
+
+```bash
+cd /opt/sktrader
+runuser -u dkmt5c -- bash -c '
+set -a; source /opt/sktrader/.env; set +a
+export HOME=/var/lib/dkcapital-mt5-3
+exec /opt/sktrader/.venv/bin/python -u -m sktrader setup-channels
+'
+```
+
+The command writes private file
+`/var/lib/dkcapital-mt5-3/.local/share/sktrader/scanner-channels.json`,
+with all eight distinct channel IDs. If the bot lacks Manage Channels,
+create the seven named channels manually and write that same JSON mapping
+locally with restrictive permissions (owner `dkmt5c`, mode 0600), using
+only real Discord channel IDs. **Never map two scanners to one channel**.
+The watcher refuses to start when the mapping is absent, incomplete or
+has a wrong AUROUX ID.
+
+### Start the visible watcher
+
+Use `SKTRADER_HEADLESS=false` in `.env` while testing through TigerVNC
+on display `:155`. The browser should show **Alerts > Select Scanner > All**.
+Run only one watcher per profile:
 
 ```bash
 cd /opt/sktrader
@@ -119,180 +95,46 @@ export HOME=/var/lib/dkcapital-mt5-3
 export DISPLAY=:155
 export XAUTHORITY=/var/lib/dkcapital-mt5-3/.local/share/sktrader/Xauthority-155
 export PLAYWRIGHT_BROWSERS_PATH=/opt/sktrader/.browsers
-exec /opt/sktrader/.venv/bin/python -u -m sktrader replay-visible
+exec /opt/sktrader/.venv/bin/python -u -m sktrader watch
 '
 ```
 
-The command scrolls the Alerts sidebar through older pages (up to 60 small
-scroll increments by default), preserving an ordered archive of card text.
-It checks each page for completeness and requires at least two-card overlap
-when the website replaces a virtualised page. It then filters to AUROUX
-XAUUSD only. All timeframes and scanner ranges are included. Each eligible card is sent
-separately, oldest first, even when prices match. A fresh scanner selection
-does not necessarily mean that JIFU's Alerts panel is scanner-filtered.
+The first complete mixed-feed read establishes a baseline and does **not**
+post older alerts. Subsequent newly published **XAUUSD** scanner cards
+are sent only to their mapped scanner channel, using the existing
+DK Capital Discord bot. All other symbols and other scanner-market
+combinations are not posted. Poll interval defaults to five seconds,
+configured by `SKTRADER_POLL_SECONDS`.
 
-To scan a longer history, set `SKTRADER_REPLAY_MAX_SCROLLS=120` in the
-private local `/opt/sktrader/.env` before replaying (maximum 200).
-If the scan reaches the cap or loses history-page overlap, it stops **without
-consuming the one-time replay batch**, allowing a safe retry. Where the
-sidebar cannot be programmatically scrolled, the command falls back to
-the latest cards only and reports the limitation.
-Both live and manually replayed Discord messages contain **only the original Auroux alert card fields**, as requested. Older replayed cards may be stale. Do not treat a replay as a fresh trade recommendation.
+## Optional one-time historical replay
 
-The whole batch and its SQLite outbox events are recorded atomically.
-Repeating the command does not create a second historical replay batch;
-after interrupted delivery the pending queued messages are retried. Discord
-network errors can still create a rare duplicate, despite the message nonce.
+Stop the watcher first. Run the same environment as above but use
+`replay-visible` instead of `watch`. It makes bounded scrolling attempts
+through the JIFU Alerts sidebar, preserving history only when successive
+windows overlap safely. If the scan reaches its configured limit or loses
+history-page overlap, it fails before posting. If no XAUUSD cards are found,
+the one-time allowance is not consumed.
 
-If the scanned mixed-scanner history contains **no AUROUX XAUUSD card**,
-the command sends zero messages and does **not** consume the one-time replay.
-The browser can only retrieve as much older history as JIFU's sidebar exposes;
-it cannot invent missing alerts or retrieve data JIFU no longer makes available.
-Scanning can take longer when JIFU fetches or virtualises older cards.
+The multi-scanner replay uses its own durable SQLite batch and does not
+automatically run when monitoring starts. Old alerts may no longer be
+actionable. Messages contain the original scanner-card fields only.
 
-The replay batch stores the **latest (newest) page** as the mixed-feed
-cursor, not the older end of the archive, so the subsequent `watch` process
-does not mistake just-replayed cards for new ones.
-After replay, restart `watch` normally.
+## Guarantees and limitations
 
-## Discord messages: only Auroux signal cards
+- Each card is fingerprinted without its changing relative age. Identical
+  level prices do not merge different scanner/timeframe cards.
+- If the mixed list reorders without enough overlap, the reader pauses
+  rather than inventing event identities. JIFU does not provide stable
+  event IDs here.
+- If a newly published XAUUSD card has an unsupported scanner or malformed
+  structure, the current pass is rejected, the cursor is preserved and
+  the diagnostic is written only to local logs.
+- Discord posting uses authenticated REST calls as the **same existing bot**;
+  it does not launch a second bot or change the DK Capital trading runtime.
+- Durable pending events are retried after a crash; a duplicate remains
+  possible after an ambiguous Discord network response.
+- Systemd deployment should be configured after observing successful live
+  XAUUSD delivery to the correct channels.
 
-Only AUROUX XAUUSD alerts are posted to channel `1565508564775075981`,
-using the existing DK Capital Discord bot. Scanner range and timeframe are
-not eligibility filters, and cards with identical prices but different
-timeframes remain independent signals.
-
-Discord embeds mirror the visible card, with **AUROUX**, its source age,
-**XAUUSD**, the signal timeframe/direction, **Point of Interest**,
-**Invalidation**, **Exit1**, **Exit2**, and **Level**. No additional analysis,
-stop commentary, tracking IDs, broker orders, health-status posts or
-promotional content. If JIFU's sidebar contains only WOLFX or other scanners,
-Sktrader posts nothing, even if a WOLFX card happens to say XAUUSD.
-
-All error diagnostics go to the VPS process logs, not the signal channel.
-A manual historical replay uses the same signal-only formatting as live
-messages. Replaying old cards does not imply they are actionable; check the
-signal's original age before relying on it.
-
-## Important limitations
-
-The authenticated JIFU DOM was checked on 29 October 2026. Although the Auroux scanner is selected, the Alerts sidebar can contain HARMONICS, SNIPERPRO, WOLFX and PRIME alerts for unrelated instruments. The collector now accepts mixed-scanner cards as source-feed context and validates only AUROUX XAUUSD for publication. JIFU automated access must be allowed under the subscription terms.
-
-JIFU examples do not expose unique event IDs or precise issuance timestamps. Ordered snapshot comparison helps preserve repeated same-price signals, but the collector deliberately stops trusting a list after an unexplained reordering or complete replacement. The Discord message nonce limits accidental duplicate posts over a short window; durable SQLite state retains publication intent. A duplicate is still possible after longer outages or a crash.
-
-There is **no MT5 integration or automatic trading in this release**. A future GitHub PR will require an isolated Auroux execution adapter, shared portfolio risk budget, broker order reconciliation and explicit live activation. Existing DK Capital EA and orders are not changed.
-
-## Milestone 1 acceptance
-
-Authenticate -> confirm live alert cards parse -> baseline -> receive a fresh signal in Discord -> restart without replay -> verify failed session alerts. No order execution during acceptance.
-
-
-## Troubleshoot mixed-scanner JIFU Alerts
-
-The **black VNC screen is normal** when `SKTRADER_HEADLESS=true`.
-A headless browser can show a valid feed with **zero current AUROUX XAUUSD alerts**. That is not an error. The collector must see all visible sidebar cards to maintain its ordered feed snapshot.
-
-Stop the running watcher with Ctrl+C before starting a second process using the
-same Chromium browser profile. The watchdog/monitor must not be running.
-
-Run the one-off safe diagnostic using the SAME environment as `watch`:
-
-```bash
-cd /opt/sktrader
-runuser -u dkmt5c -- bash -c '
-  set -a; source /opt/sktrader/.env; set +a
-  export HOME=/var/lib/dkcapital-mt5-3
-  export DISPLAY=:155
-  export XAUTHORITY=/var/lib/dkcapital-mt5-3/.local/share/sktrader/Xauthority-155
-  export PLAYWRIGHT_BROWSERS_PATH=/opt/sktrader/.browsers
-  exec /opt/sktrader/.venv/bin/python -m sktrader diagnose
-'
-```
-
-The diagnostic prints **only** page-path, HTML read-state, field-presence
-booleans and counts. It does not print JIFU page content, secrets or screenshots.
-
-- `possible_login=true`: browser session may have expired; reauthenticate
-  through VNC with `python -m sktrader login`.
-- `poi_labels=0`: JIFU may not have finished loading or Alerts is not open.
-- `poi_labels>0`, but zero complete cards: the JIFU DOM structure or field
-  text differs from the current extractor; update the parser through a PR.
-- `Alert capture: READY`: the DOM extractor has parsed the visible alerts;
-  close the diagnostic before running the normal `watch` process.
-
-No manual refresh loop or MT5 change is needed to troubleshoot.
-
-## Reuse existing DK Capital Discord bot (no webhook, no second bot)
-
-Sktrader sends `POST /api/v10/channels/1565508564775075981/messages`
-as the **existing DK Capital bot** via its token and the Discord REST API.
-It does not connect another Discord Gateway session, launch another bot
-process, restart DK Capital services, or touch MT5.
-
-Configure the already-installed DK Capital bot to have **View Channel**,
-**Send Messages** and **Embed Links** access to channel
-`1565508564775075981`. Do not paste its token into chat, GitHub,
-process arguments or Sktrader's readable `.env` file.
-
-To create a private token file locally on the VPS using the existing
-`/opt/dkcapital/.env` value, run this **as root**. It does not display
-the secret and creates a new file readable only by Linux user `dkmt5c`.
-It will refuse to overwrite an existing secret file:
-
-```bash
-python3 - <<'PY'
-import os
-import pwd
-from pathlib import Path
-
-source = Path("/opt/dkcapital/.env")
-target = Path("/var/lib/dkcapital-mt5-3/.local/share/sktrader/discord-bot-token")
-lines = source.read_text(encoding="utf-8").splitlines()
-matches = [line.split("=", 1)[1].strip().strip('"').strip("'")
-           for line in lines if line.lstrip().startswith("DISCORD_BOT_TOKEN=")]
-if len(matches) != 1 or len(matches[0]) < 20:
-    raise SystemExit("Expected one populated DISCORD_BOT_TOKEN in DKCapital .env")
-uid = pwd.getpwnam("dkmt5c").pw_uid
-gid = pwd.getpwnam("dkmt5c").pw_gid
-fd = os.open(str(target), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-try:
-    os.fchown(fd, uid, gid)
-    os.write(fd, matches[0].encode("utf-8"))
-    os.fchmod(fd, 0o400)
-finally:
-    os.close(fd)
-print("Private bot token file created; token was not displayed")
-PY
-```
-
-Set in `/opt/sktrader/.env` (the actual token **must not**
-appear there):
-
-```dotenv
-SKTRADER_DISCORD_CHANNEL_ID=1565508564775075981
-SKTRADER_DISCORD_BOT_TOKEN_FILE=/var/lib/dkcapital-mt5-3/.local/share/sktrader/discord-bot-token
-```
-
-Remove any obsolete `SKTRADER_DISCORD_WEBHOOK` line to avoid confusion;
-webhooks are no longer used. The bot token is validated on watcher startup.
-To avoid event duplication, run exactly one Sktrader watcher at a time.
-
-**Parser acceptance gate:** The diagnostic reports how many mixed-scanner card boundaries are readable. A mixed feed of 10 cards with zero AUROUX XAUUSD is a valid capture, not a parser failure. Only source `AUROUX` and instrument `XAUUSD` are eligible for publication; a WOLFX/XAUUSD signal must never be forwarded as Auroux. The initial mixed-feed read establishes a baseline and does not replay historical posts. An incomplete feed or malformed new eligible Auroux signal fails closed without advancing the durable snapshot. A new Auroux card should appear in Discord after its insertion into the feed, with no timeframe or range restrictions.
-
-The All filter in JIFU is a **timeframe** filter, not proof that the alert feed is restricted to the selected scanner. If source filtering is supported in the JIFU UI, it can be investigated separately; don't assume it is active.
-
-## Each Auroux card is a distinct signal
-
-A 30M SELL, a 5M SELL and a 1H SELL with the same POI, invalidation,
-TP1, TP2 and 250-pip scanner level are **three independent alert cards**.
-Sktrader uses an age-independent, card-level feed fingerprint, including
-scanner, XAUUSD, direction and timeframe. It must publish **three** separate
-Discord messages when these are three new cards, not collapse them into
-one signal by price. The first observed list is a historical baseline and
-will not be reposted.
-
-Default `SKTRADER_TIMEFRAME=ALL` forwards all supported Auroux timeframes.
-An existing local `/opt/sktrader/.env` with `SKTRADER_TIMEFRAME=5M` is
-**not** changed by a `git pull`; set it to `ALL` explicitly on the VPS.
-This does not place three MT5 orders: execution is disabled and messages
-are labelled `ALERT ONLY - NO TRADE`.
+Run `/opt/sktrader/.venv/bin/python -m unittest discover -s tests -v`
+for offline tests. JIFU automated access must comply with the subscriber terms.
