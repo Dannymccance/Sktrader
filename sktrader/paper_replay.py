@@ -81,14 +81,6 @@ class PaperReplay:
 
     def tick(self, now=None):
         now=datetime.now(timezone.utc) if now is None else timestamp(now)
-        # Source feed is trusted only for this demo profile. Paper calculations use
-        # USD XAUUSD quote/contract conventions, NOT the GBP account tick_value.
-        ident=self.market.execute("SELECT login,mode,currency,symbol,contract_size,generated_at "
-                                  "FROM feed_identity WHERE id=1").fetchone()
-        if not ident or ident[1]!="DEMO" or ident[3]!="XAUUSD" or str(ident[4])!="100.0000":
-            raise RuntimeError("broker identity/contract unverified")
-        if (now-datetime.fromtimestamp(ident[5],tz=timezone.utc)).total_seconds() > 120:
-            raise RuntimeError("broker identity stale")
         # Collect newly detected signals. Historical records are never replayed
         # on the initial service activation.
         for eid,observed,payload in self.signals.execute(
@@ -120,6 +112,14 @@ class PaperReplay:
                                     {"status":"paper only, awaiting executable bid/ask"},
                                     now.isoformat())
                 self._set_state("signal_cursor",eid)
+        # Source feed is trusted only for this demo profile. Paper calculations use
+        # USD XAUUSD quote/contract conventions, NOT the GBP account tick_value.
+        ident=self.market.execute("SELECT login,mode,currency,symbol,contract_size,generated_at "
+                                  "FROM feed_identity WHERE id=1").fetchone()
+        if not ident or ident[1]!="DEMO" or ident[3]!="XAUUSD" or str(ident[4])!="100.0000":
+            raise RuntimeError("broker identity/contract unverified")
+        if (now-datetime.fromtimestamp(ident[5],tz=timezone.utc)).total_seconds() > 120:
+            raise RuntimeError("broker identity stale")
         # Only post-activation quote ticks. Do not create retroactive wins.
         query=("SELECT rowid,time_msc,bid,ask FROM feed_ticks WHERE rowid>? "
                "ORDER BY rowid LIMIT 2000")
