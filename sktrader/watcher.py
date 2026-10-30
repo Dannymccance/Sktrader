@@ -597,7 +597,7 @@ def replay_visible(config: Config) -> None:
 def watch(config: Config) -> None:
     """Monitor all mixed JIFU Alerts; restore lost sessions without resetting dedupe."""
     from playwright.sync_api import sync_playwright
-    from sktrader.recovery import HealthMonitor, login_state, try_login
+    from sktrader.recovery import HealthMonitor, login_state, try_login, browser_transport_dead
 
     _secure_profile(config.profile)
     _bot_token(config.bot_token_file)
@@ -666,6 +666,9 @@ def watch(config: Config) -> None:
                     failures += 1
                     reason = f"{type(exc).__name__}: {str(exc)[:190]}"
                     health.degraded(reason)
+                    if browser_transport_dead(exc):
+                        LOG.error("JIFU browser transport destroyed; exiting for systemd restart (SQLite state preserved)")
+                        raise
                     if failures == 1 or failures % 12 == 0:
                         LOG.warning("Monitor paused (%s failures): %s", failures, reason)
                     # A transient blank React view often recovers itself. After
@@ -680,10 +683,16 @@ def watch(config: Config) -> None:
                             _prepare_page(page)
                             last_selector = None
                         except Exception as reload_exc:
+                            if browser_transport_dead(reload_exc):
+                                LOG.error("JIFU browser crashed during recovery; exiting for systemd restart")
+                                raise
                             LOG.warning("JIFU recovery reload failed: %s", type(reload_exc).__name__)
                 time.sleep(max(0.2, config.poll_seconds - (time.monotonic() - started)))
         finally:
-            context.close()
+            try:
+                context.close()
+            except Exception:
+                LOG.warning("JIFU browser context already unavailable during shutdown")
             store.conn.close()
 
 
