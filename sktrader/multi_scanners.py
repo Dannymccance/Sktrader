@@ -181,7 +181,7 @@ class ScannerStore:
                     raise SnapshotError("Unparseable new XAUUSD scanner signal") from exc
         observed_scanners = set()
         for card in cards:
-            heading = re.sub(r"\\s+", " ", card.strip()).upper()
+            heading = re.sub(r"\s+", " ", card.strip()).upper()
             for alias, canonical in SCANNER_ALIASES.items():
                 if heading.startswith(alias + " ") and canonical in SCANNER_CHANNELS:
                     observed_scanners.add(canonical)
