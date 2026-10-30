@@ -15,6 +15,10 @@ CHANNEL = "1565846495578558526"
 
 
 def dashboard(ledger: sqlite3.Connection):
+    quote = ledger.execute("SELECT stamp,bid,ask FROM quotes ORDER BY seq DESC LIMIT 1").fetchone()
+    bid, ask = (Decimal(quote[1]),Decimal(quote[2])) if quote else (None,None)
+    now = datetime.now(timezone.utc)
+    quote_fresh = bool(quote and abs((now-datetime.fromisoformat(quote[0])).total_seconds()) <= 30)
     accounts = []
     for scanner, balance, realized in ledger.execute(
         "SELECT scanner,balance,realized FROM portfolios ORDER BY scanner"):
@@ -22,34 +26,50 @@ def dashboard(ledger: sqlite3.Connection):
             "SELECT event_id,side,entry_price,sl,tp,lots FROM paper_signals "
             "WHERE scanner=? AND state='OPEN' ORDER BY event_id", (scanner,)).fetchall()
         closed = ledger.execute(
-            "SELECT state,net_pnl FROM paper_signals WHERE scanner=? "
+            "SELECT state,net_pnl,exit_time FROM paper_signals WHERE scanner=? "
             "AND state IN ('TP1','SL')", (scanner,)).fetchall()
-        wins = sum(1 for state,_ in closed if state == "TP1")
+        wins = sum(1 for state,_,_ in closed if state == "TP1")
         losses = len(closed)-wins
+        week = now.isocalendar()
+        weekly = sum((Decimal(v) for _,v,t in closed if t and
+                      datetime.fromisoformat(t).isocalendar()[:2] == week[:2]),
+                     Decimal("0"))
         orders = ledger.execute(
             "SELECT COUNT(*) FROM paper_signals WHERE scanner=? AND state='PENDING'",
             (scanner,)).fetchone()[0]
-        accounts.append({"scanner":scanner,"balance":str(balance),
-                         "realized":str(realized),"wins":wins,"losses":losses,
-                         "pending":orders,"open":positions})
+        unrealized = Decimal("0")
+        for _,side,entry,_,_,lots in positions:
+            if bid is not None and ask is not None:
+                mark = bid if side == "BUY" else ask
+                unrealized += (mark-Decimal(entry) if side == "BUY" else
+                               Decimal(entry)-mark)*Decimal(lots)*Decimal("100")
+        accounts.append({"scanner":scanner,"balance":Decimal(balance),
+                         "realized":Decimal(realized),"wins":wins,"losses":losses,
+                         "weekly":weekly,"pending":orders,"open":positions,
+                         "unrealized":unrealized})
     fields = []
     for a in accounts:
         win_rate = f"{100*a['wins']/(a['wins']+a['losses']):.1f}%" if a["wins"]+a["losses"] else "N/A"
-        line = (f"Balance: **${Decimal(a['balance']):,.2f}** | "
-                f"Realized: ${Decimal(a['realized']):,.2f}\n"
+        line = (f"Balance: **${a['balance']:,.2f}** | "
+                f"Realized: ${a['realized']:,.2f}\\n"
                 f"Closed: {a['wins']+a['losses']} | W: {a['wins']} | L: {a['losses']} "
-                f"| WR: {win_rate}\n"
+                f"| WR: {win_rate}\\n"
+                f"Weekly realized: ${a['weekly']:,.2f}\\n"
                 f"Pending: {a['pending']} | Open: {len(a['open'])}")
+        if quote_fresh:
+            line += f"\\n**Indicative equity: ${a['balance']+a['unrealized']:,.2f}** | Floating: ${a['unrealized']:,.2f}"
+        else:
+            line += "\\nEquity: N/A (quote missing or stale)"
         for eid,side,entry,sl,tp,lots in a["open"][:3]:
-            line += f"\n#{eid} {side} {lots} @ {entry} | SL {sl} | TP1 {tp}"
-        fields.append({"name":a["scanner"],"value":line,"inline":False})
+            line += f"\\n#{eid} {side} {lots} @ {entry} | SL {sl} | TP1 {tp}"
+        fields.append({"name":a["scanner"],"value":line[:1024],"inline":False})
     return {"embeds":[{"title":"DK Capital | Paper Portfolios (SIMULATED)",
-                        "description":"Independent virtual USD books, each started at $1,000. "
-                        "Paper fills are not broker executions. "
-                        "Equity and unrealized P&L are not shown until quote-mark valuation is commissioned.",
+                        "description":"Five independent USD virtual books, each started at $1,000. "
+                        "Paper fills are NOT broker executions. "
+                        "Equity is indicative when the latest quote is fresh; fees/slippage are not fully calibrated.",
                         "color":3447003,
                         "fields":fields,
-                        "footer":{"text":"Updated "+datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")}}],
+                        "footer":{"text":"Updated "+now.strftime("%Y-%m-%d %H:%M UTC")}}],
             "allowed_mentions":{"parse":[]}}
 
 
