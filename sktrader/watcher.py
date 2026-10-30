@@ -669,7 +669,10 @@ def main() -> None:
                 config.discord_channel_id,
                 config.profile.parent / "scanner-channels.json",
             )
-            print(f"Discord XAUUSD scanner channels ready: {len(channels)}. No alerts posted.")
+            print(f"Mapped {len(channels)} EXISTING Discord signal channels. "
+                  "No channels created or deleted; no alerts posted.")
+            for scanner, channel_id in channels.items():
+                print(f"  {scanner}: {channel_id}")
         elif args.command == "login":
             login(config)
         elif args.command == "diagnose":
