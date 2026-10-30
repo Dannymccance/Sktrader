@@ -248,9 +248,17 @@ def main():
     dashboard=DashboardPublisher(replay.engine.db, channel=args.channel)
     last_dashboard=0
     while True:
+        # Signal receipt/audit delivery must continue even when broker
+        # prices are unavailable. No quote-derived fills are attempted then.
         try:
             feed.ingest(args.common)
+        except (OSError,ValueError,RuntimeError,sqlite3.Error) as exc:
+            print("market ingest unavailable:",str(exc)[:240],flush=True)
+        try:
             replay.tick()
+        except (OSError,ValueError,RuntimeError,sqlite3.Error) as exc:
+            print("paper execution paused:",str(exc)[:240],flush=True)
+        try:
             replay.reconcile_audit()
             for event in replay.pending_notifications():
                 message_id=notify_discord(args.channel,token,event)
@@ -259,9 +267,8 @@ def main():
                 dashboard.publish(token)
                 last_dashboard=time.monotonic()
         except (OSError,ValueError,RuntimeError,sqlite3.Error,urllib.error.URLError) as exc:
-            print("paper replay paused:",str(exc)[:240],flush=True)
+            print("paper Discord reporting unavailable:",str(exc)[:240],flush=True)
         time.sleep(args.interval)
-
 
 if __name__=="__main__":
     main()
