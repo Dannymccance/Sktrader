@@ -1,0 +1,24 @@
+[Unit]
+Description=DK Capital AUROUX demo broker-verified reporting
+After=network-online.target dkcapital-mt5-3.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dkmt5c
+Group=dkmt5c
+WorkingDirectory=/opt/sktrader
+EnvironmentFile=/opt/sktrader/.env
+ExecStart=/opt/sktrader/.venv/bin/python -m sktrader.broker_reporting --common /var/lib/dkcapital-mt5-3/.wine/drive_c/users/dkmt5c/AppData/Roaming/MetaQuotes/Terminal/Common/Files --database /var/lib/dkcapital-mt5-3/.local/share/sktrader/auroux_broker_reporting.db --login 5058169035 --server MetaQuotes-Demo --token-file /etc/sktrader/discord-bot-token --dashboard-channel ${AUROUX_DEMO_DASHBOARD_CHANNEL_ID} --confirmations-channel ${AUROUX_DEMO_CONFIRMATIONS_CHANNEL_ID} --results-channel ${AUROUX_DEMO_RESULTS_CHANNEL_ID}
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/dkcapital-mt5-3/.local/share/sktrader
+ReadOnlyPaths=/var/lib/dkcapital-mt5-3/.wine/drive_c/users/dkmt5c/AppData/Roaming/MetaQuotes/Terminal/Common/Files
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
