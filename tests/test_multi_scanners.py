@@ -61,7 +61,7 @@ class MultiScannerTests(unittest.TestCase):
                 "SNIPERPRO\\n2 minutes ago\\nUSDJPY\\n5M - SELL\\n"
                 "Point of Interest 150.10000\\nExit 1 149.50000",
             ]
-            latest = [x.replace("\\\\n", "\\n") for x in latest]
+            latest = [x.replace("\\n", "\n") for x in latest]
             count, baseline = store.observe(latest)
             self.assertTrue(baseline)
             self.assertEqual(count, 0)
