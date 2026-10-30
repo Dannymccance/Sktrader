@@ -69,6 +69,50 @@ After a successful interactive test, install the example systemd service at `dep
 | `SKTRADER_BROWSER_PROFILE` | Local persistent browser state |
 | `SKTRADER_DATABASE` | Local SQLite alert journal |
 
+## One-time historical replay of the currently loaded alert cards
+
+The normal `watch` command intentionally baselines older cards without
+posting them. To send **currently loaded** AUROUX XAUUSD cards to Discord
+once, use `python -m sktrader replay-visible` under the **same environment
+and Linux user as watch**. This command is manual, never runs automatically
+on service startup, and does not place any trades.
+
+**Stop `watch` using Ctrl+C before replaying.** The profile-wide lock will
+reject simultaneous `login`, `watch`, `diagnose` and `replay-visible`.
+Run the following from your existing VPS root SSH terminal:
+
+```bash
+cd /opt/sktrader
+runuser -u dkmt5c -- bash -c '
+set -a; source /opt/sktrader/.env; set +a
+export HOME=/var/lib/dkcapital-mt5-3
+export DISPLAY=:155
+export XAUTHORITY=/var/lib/dkcapital-mt5-3/.local/share/sktrader/Xauthority-155
+export PLAYWRIGHT_BROWSERS_PATH=/opt/sktrader/.browsers
+exec /opt/sktrader/.venv/bin/python -u -m sktrader replay-visible
+'
+```
+
+The command checks that **all currently loaded sidebar cards** can be read,
+then filters to AUROUX XAUUSD and the configured timeframe/ranges. Each
+eligible card is sent separately, oldest first, even when prices match.
+Replayed Discord cards are prominently marked **HISTORICAL REPLAY, NOT A
+NEW SIGNAL, NO TRADE**.
+
+The whole batch and its SQLite outbox events are recorded atomically.
+Repeating the command does not create a second historical replay batch;
+after interrupted delivery the pending queued messages are retried. Discord
+network errors can still create a rare duplicate, despite the message nonce.
+
+If the current mixed-scanner sidebar contains **no AUROUX XAUUSD card**,
+the command sends zero messages and does **not** consume the one-time replay.
+The feed may have changed since any earlier screenshots; the command cannot
+retrieve cards no longer loaded by JIFU.
+
+The replay batch also updates the mixed-feed cursor so the subsequent
+`watch` process does not mistake just-replayed cards for new ones.
+After replay, restart `watch` normally.
+
 ## Important limitations
 
 The authenticated JIFU DOM was checked on 29 October 2026. Although the Auroux scanner is selected, the Alerts sidebar can contain HARMONICS, SNIPERPRO, WOLFX and PRIME alerts for unrelated instruments. The collector now accepts mixed-scanner cards as source-feed context and validates only AUROUX XAUUSD for publication. JIFU automated access must be allowed under the subscription terms.

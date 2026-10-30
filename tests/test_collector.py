@@ -8,7 +8,7 @@ import os
 from sktrader.core import AlertError, EventStore, SnapshotError, auroux_xauusd_card, feed_fingerprint, new_prefix, parse_card
 from unittest.mock import patch
 from unittest import mock
-from sktrader.watcher import browser_geometry, _alert_embed, _read_alerts, _read_feed_cards, DIAG_JS, EXTRACT_CARDS_JS, PROBE_CARDS_JS, Config, _post_discord, _bot_token
+from sktrader.watcher import browser_geometry, _alert_embed, _read_alerts, _read_feed_cards, DIAG_JS, EXTRACT_CARDS_JS, PROBE_CARDS_JS, Config, _post_discord, _bot_token, _one_browser_at_a_time
 
 
 BUY = """AUROUX
@@ -209,6 +209,95 @@ Level
             self.assertEqual(store.observe_feed([cards[0]] + old), (1, False))
             self.assertEqual(store.pending()[0][2].timeframe, "30M")
             store.conn.close()
+
+
+class ReplayVisibleTests(unittest.TestCase):
+    def test_one_time_historical_replay_after_existing_baseline(self):
+        with tempfile.TemporaryDirectory() as temp:
+            filename = Path(temp) / "signals.db"
+            store = EventStore(filename)
+            old = [HARMONICS, WOLFX, PRIME]
+            self.assertEqual(store.observe_feed(old), (0, True))
+            cards = [BUY, SELL] + old
+            self.assertEqual(store.replay_visible_once(
+                cards, timeframe="ALL", levels=frozenset({250, 500})), (2, False))
+            self.assertEqual(len(store.pending()), 2)
+            self.assertEqual(
+                [item[2].timeframe for item in store.pending()], ["5M", "30M"]
+            )
+            self.assertTrue(all(store.is_visible_replay_event(x[0]) for x in store.pending()))
+            self.assertEqual(store.observe_feed(cards), (0, False))
+            store.conn.close()
+            reopened = EventStore(filename)
+            self.assertEqual(reopened.replay_visible_once(
+                cards, timeframe="ALL", levels=frozenset({250, 500})), (0, True))
+            self.assertEqual(len(reopened.pending()), 2)
+            for event_id, _, _ in reopened.pending():
+                reopened.delivered(event_id)
+            self.assertEqual(reopened.pending(), [])
+            reopened.conn.close()
+
+    def test_zero_auroux_does_not_use_one_time_replay(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = EventStore(Path(temp) / "signals.db")
+            old = [HARMONICS, WOLFX, PRIME]
+            self.assertEqual(store.replay_visible_once(
+                old, timeframe="ALL", levels=frozenset({250, 500})), (0, False))
+            self.assertEqual(store.pending(), [])
+            self.assertEqual(store.observe_feed(old), (0, False))
+            self.assertEqual(store.replay_visible_once(
+                [BUY] + old, timeframe="ALL", levels=frozenset({250, 500})), (1, False))
+            self.assertEqual(len(store.pending()), 1)
+            store.conn.close()
+
+    def test_one_time_replay_preserves_individual_same_price_cards(self):
+        cards = IndependentAurouxTimeframeTests._same_prices_three_frames()
+        with tempfile.TemporaryDirectory() as temp:
+            store = EventStore(Path(temp) / "signals.db")
+            self.assertEqual(store.replay_visible_once(
+                cards + [HARMONICS],
+                timeframe="ALL", levels=frozenset({250})), (3, False))
+            self.assertEqual({a.timeframe for _, _, a in store.pending()},
+                             {"30M", "5M", "1H"})
+            store.conn.close()
+
+    def test_manual_replay_respects_timeframe_and_level_filters(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = EventStore(Path(temp) / "signals.db")
+            cards = IndependentAurouxTimeframeTests._same_prices_three_frames()
+            self.assertEqual(store.replay_visible_once(
+                cards, timeframe="5M", levels=frozenset({250})), (1, False))
+            self.assertEqual(store.pending()[0][2].timeframe, "5M")
+            store.conn.close()
+
+    def test_bad_target_card_cannot_create_replay_batch(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = EventStore(Path(temp) / "signals.db")
+            broken = BUY.replace("4015.50000", "4030.50000")
+            with self.assertRaisesRegex(SnapshotError, "Malformed historical"):
+                store.replay_visible_once(
+                    [broken, HARMONICS], timeframe="ALL", levels=frozenset({250}))
+            self.assertEqual(store.pending(), [])
+            self.assertEqual(store.replay_visible_once(
+                [BUY, HARMONICS], timeframe="ALL", levels=frozenset({250})), (1, False))
+            store.conn.close()
+
+    def test_historical_replay_embed_is_clearly_labelled(self):
+        alert = parse_card(BUY)
+        embed = _alert_embed(19, "2026-10-29T12:00:00Z", alert, historical=True)["embeds"][0]
+        self.assertTrue(embed["title"].startswith("HISTORICAL REPLAY"))
+        self.assertIn("NOT A NEW SIGNAL", embed["footer"]["text"])
+        self.assertIn("NO TRADE", embed["footer"]["text"])
+
+    def test_browser_profile_single_instance_lock(self):
+        with tempfile.TemporaryDirectory() as temp:
+            profile = Path(temp) / "profile"
+            with _one_browser_at_a_time(profile):
+                with self.assertRaisesRegex(RuntimeError, "Another Sktrader browser"):
+                    with _one_browser_at_a_time(profile):
+                        pass
+            with _one_browser_at_a_time(profile):
+                pass
 
 
 class MixedFeedTests(unittest.TestCase):
