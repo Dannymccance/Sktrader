@@ -105,9 +105,13 @@ long LatestId() {
 int OnInit() {
    checkpoint="AUROUX_"+IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))+"_"+IntegerToString((long)MagicNumber);
    if(!GlobalVariableCheck(checkpoint)) {
-      long watermark=SkipHistoryOnFirstStart?LatestId():0;
-      GlobalVariableSet(checkpoint,(double)watermark);
-      Print("AUROUX initialized, starting after id ",watermark);
+      int probe=FileOpen(SignalFile,FILE_READ|FILE_CSV|FILE_COMMON|FILE_ANSI,';');
+      if(probe!=INVALID_HANDLE) {
+         FileClose(probe);
+         long watermark=SkipHistoryOnFirstStart?LatestId():0;
+         GlobalVariableSet(checkpoint,(double)watermark);
+         Print("AUROUX initialized, starting after id ",watermark);
+      } else Print("AUROUX waiting for initial bridge file; historical signals will not replay");
    }
    EventSetTimer(MathMax(1,CheckSeconds));
    return INIT_SUCCEEDED;
@@ -116,6 +120,13 @@ void OnDeinit(const int reason) { EventKillTimer(); }
 void OnTimer() {
    int handle=FileOpen(SignalFile,FILE_READ|FILE_CSV|FILE_COMMON|FILE_ANSI,';');
    if(handle==INVALID_HANDLE) return;
+   if(!GlobalVariableCheck(checkpoint)) {
+      FileClose(handle);
+      long watermark=SkipHistoryOnFirstStart?LatestId():0;
+      GlobalVariableSet(checkpoint,(double)watermark);
+      Print("AUROUX bridge connected, initial watermark ",watermark);
+      return;
+   }
    long checkpointId=(long)GlobalVariableGet(checkpoint);
    while(!FileIsEnding(handle)) {
       string id=FileReadString(handle);
