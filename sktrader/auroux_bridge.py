@@ -49,7 +49,7 @@ def deadline_epoch(signal: dict) -> int | None:
     if age == "just now":
         elapsed = 59
     else:
-        match = re.fullmatch(r"(\\d+|a|an) (second|minute|hour|day|week)s? ago", age)
+        match = re.fullmatch(r"(\d+|a|an) (second|minute|hour|day|week)s? ago", age)
         if not match:
             return None
         quantity = 1 if match.group(1) in ("a", "an") else int(match.group(1))
