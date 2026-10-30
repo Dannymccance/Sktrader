@@ -231,7 +231,8 @@ def send_discord(token,channel,payload,*,message_id=None):
         url+="/"+str(message_id)
     req=urllib.request.Request(url,data=json.dumps(payload).encode(),method=method,
                                headers={"Authorization":"Bot "+token,
-                                        "Content-Type":"application/json"})
+                                        "Content-Type":"application/json",
+                                        "User-Agent":"DKCapital-Sktrader-Reporting/1.0"})
     with urllib.request.urlopen(req,timeout=12) as res:
         result=json.load(res)
     if not str(result.get("id","")).isdigit():
