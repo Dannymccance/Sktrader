@@ -159,6 +159,16 @@ class EventStore:
             id INTEGER PRIMARY KEY CHECK (id = 1),
             fingerprints TEXT NOT NULL
         )""")
+        # One manual backfill for the complete currently loaded Alerts sidebar.
+        # The same replay batch can be safely resumed if sending is interrupted.
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS visible_replay_batch (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            queued_at TEXT NOT NULL,
+            alert_count INTEGER NOT NULL
+        )""")
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS visible_replay_events (
+            event_id INTEGER PRIMARY KEY
+        )""")
         self.conn.commit()
 
     def observe(self, alerts: list[Alert]) -> tuple[int, bool]:
@@ -223,6 +233,74 @@ class EventStore:
                 (json.dumps(current),),
             )
         return len(eligible), previous is None
+
+    def replay_visible_once(
+        self, cards: list[str], *, timeframe: str, levels: frozenset[int]
+    ) -> tuple[int, bool]:
+        """Queue one historical batch of visible AUROUX XAUUSD cards.
+
+        The scanner feed is mixed. Each eligible card is treated independently,
+        even if direction and prices repeat. The batch marker and all
+        corresponding outbox rows commit atomically, before any HTTP request.
+        A second invocation never creates another replay batch. If the feed
+        contains zero eligible cards, do not consume the one-time allowance.
+        """
+        if not cards:
+            raise SnapshotError("Cannot replay an empty JIFU feed")
+        if timeframe not in {"ALL", "1M", "5M", "15M", "30M", "1H", "4H"}:
+            raise ValueError("Unsupported replay timeframe")
+        if not levels:
+            raise ValueError("No scanner levels configured")
+        previous_replay = self.conn.execute(
+            "SELECT alert_count FROM visible_replay_batch WHERE id=1"
+        ).fetchone()
+        if previous_replay is not None:
+            return 0, True
+
+        # Validate all AUROUX XAUUSD cards before touching the database,
+        # even if some are outside the configured delivery filters.
+        eligible: list[Alert] = []
+        for card in reversed(cards):
+            if not auroux_xauusd_card(card):
+                continue
+            try:
+                alert = parse_card(card)
+            except AlertError as exc:
+                raise SnapshotError(f"Malformed historical AUROUX XAUUSD card: {exc}") from exc
+            if (timeframe == "ALL" or timeframe == alert.timeframe) and alert.level in levels:
+                eligible.append(alert)
+
+        current = [feed_fingerprint(card) for card in cards]
+        now = datetime.now(timezone.utc).isoformat()
+        with self.conn:
+            if eligible:
+                for alert in eligible:
+                    cursor = self.conn.execute(
+                        "INSERT INTO events(observed_at,payload) VALUES (?,?)",
+                        (now, json.dumps(asdict(alert), sort_keys=True)),
+                    )
+                    self.conn.execute(
+                        "INSERT INTO visible_replay_events(event_id) VALUES (?)",
+                        (cursor.lastrowid,),
+                    )
+                self.conn.execute(
+                    "INSERT INTO visible_replay_batch(id,queued_at,alert_count) VALUES(1,?,?)",
+                    (now, len(eligible)),
+                )
+            # The next normal watch pass must not treat these same visible
+            # historical cards as a fresh post after replay has just sent them.
+            self.conn.execute(
+                "INSERT INTO feed_snapshot(id,fingerprints) VALUES(1,?) "
+                "ON CONFLICT(id) DO UPDATE SET fingerprints=excluded.fingerprints",
+                (json.dumps(current),),
+            )
+        return len(eligible), False
+
+    def is_visible_replay_event(self, event_id: int) -> bool:
+        return self.conn.execute(
+            "SELECT 1 FROM visible_replay_events WHERE event_id=?",
+            (event_id,),
+        ).fetchone() is not None
 
     def pending(self) -> list[tuple[int, str, Alert]]:
         rows = self.conn.execute(
