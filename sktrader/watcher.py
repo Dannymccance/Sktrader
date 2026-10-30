@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import logging
 import os
@@ -9,6 +10,7 @@ import stat
 import time
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -226,6 +228,25 @@ def _secure_profile(path: Path) -> None:
     path.chmod(stat.S_IRWXU)
 
 
+@contextmanager
+def _one_browser_at_a_time(profile: Path):
+    """Prevent login, watch, diagnose and replay sharing one Chromium profile."""
+    profile.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    lock_path = profile.parent / ".sktrader-browser.lock"
+    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError(
+                "Another Sktrader browser process is active. Stop the watcher "
+                "with Ctrl+C before running replay-visible or diagnose."
+            ) from exc
+        yield
+    finally:
+        os.close(fd)
+
+
 def _prepare_page(page) -> None:
     """Best-effort select the alerts panel; never click a trade action."""
     try:
@@ -304,10 +325,10 @@ def _post_discord(config: Config, payload: dict, *, event_id: int | None = None)
             raise RuntimeError(f"Discord returned HTTP {response.status}")
 
 
-def _alert_embed(event_id: int, observed_at: str, alert: Alert) -> dict:
+def _alert_embed(event_id: int, observed_at: str, alert: Alert, *, historical: bool = False) -> dict:
     return {
         "embeds": [{
-            "title": f"AUROUX | {alert.symbol} | {alert.timeframe} {alert.side}",
+            "title": f"{'HISTORICAL REPLAY | ' if historical else ''}AUROUX | {alert.symbol} | {alert.timeframe} {alert.side}",
             "color": 0x22C55E if alert.side == "BUY" else 0xEF4444,
             "fields": [
                 {"name": "Point of Interest", "value": alert.poi, "inline": True},
@@ -317,7 +338,11 @@ def _alert_embed(event_id: int, observed_at: str, alert: Alert) -> dict:
                 {"name": "Scanner level", "value": f"{alert.level} pips", "inline": True},
                 {"name": "JIFU display age", "value": alert.relative_age, "inline": True},
             ],
-            "footer": {"text": f"Collector event #{event_id} | observed {observed_at} | ALERT ONLY - NO TRADE"},
+            "footer": {"text": (
+                f"Collector event #{event_id} | observed {observed_at} | "
+                + ("HISTORICAL - NOT A NEW SIGNAL | " if historical else "")
+                + "ALERT ONLY - NO TRADE"
+            )},
         }],
         "allowed_mentions": {"parse": []},
     }
@@ -328,7 +353,14 @@ def _send_pending(store: EventStore, config: Config) -> None:
         # Record ALL alerts, but notify Discord only for configured strategies.
         if ((config.timeframe == "ALL" or alert.timeframe == config.timeframe)
                 and alert.level in config.levels):
-            _post_discord(config, _alert_embed(event_id, observed_at, alert), event_id=event_id)
+            _post_discord(
+                config,
+                _alert_embed(
+                    event_id, observed_at, alert,
+                    historical=store.is_visible_replay_event(event_id),
+                ),
+                event_id=event_id,
+            )
         store.delivered(event_id)
         LOG.info("Recorded event #%s %s %s %s (Discord filter applied)", event_id, alert.side, alert.timeframe, alert.poi)
 
@@ -394,6 +426,47 @@ def diagnose(config: Config) -> None:
             context.close()
 
 
+def replay_visible(config: Config) -> None:
+    """Manually queue one historical batch; never run under the live watcher."""
+    from playwright.sync_api import sync_playwright
+
+    _secure_profile(config.profile)
+    _bot_token(config.bot_token_file)
+    store = EventStore(config.database)
+    with sync_playwright() as playwright:
+        viewport, args = browser_geometry()
+        context = playwright.chromium.launch_persistent_context(
+            str(config.profile), headless=config.headless, viewport=viewport, args=args,
+        )
+        try:
+            page = context.pages[0] if context.pages else context.new_page()
+            page.goto(config.url, wait_until="domcontentloaded", timeout=45000)
+            _prepare_page(page)
+            page.wait_for_timeout(5000)
+            cards = _read_feed_cards(page)
+            count, already_run = store.replay_visible_once(
+                cards, timeframe=config.timeframe, levels=config.levels,
+            )
+            if already_run:
+                print("Historical Auroux replay batch was already queued; no new replay scheduled.")
+            elif count == 0:
+                print(
+                    f"Found {len(cards)} JIFU cards, but zero AUROUX XAUUSD "
+                    "cards matching the configured timeframe and levels. "
+                    "No historical alerts sent; replay remains available."
+                )
+            else:
+                print(
+                    f"Queued {count} historical AUROUX XAUUSD cards for one-time "
+                    f"Discord replay to channel {config.discord_channel_id}."
+                )
+            _send_pending(store, config)
+            print("Any queued eligible Discord messages have been processed.")
+        finally:
+            context.close()
+            store.conn.close()
+
+
 def watch(config: Config) -> None:
     from playwright.sync_api import sync_playwright
 
@@ -450,13 +523,16 @@ def watch(config: Config) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Sktrader JIFU collector (watch-only)")
-    parser.add_argument("command", choices=["login", "diagnose", "watch"])
+    parser.add_argument("command", choices=["login", "diagnose", "watch", "replay-visible"])
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    config = Config.from_env(require_discord=args.command == "watch")
-    if args.command == "login":
-        login(config)
-    elif args.command == "diagnose":
-        diagnose(config)
-    else:
-        watch(config)
+    config = Config.from_env(require_discord=args.command in {"watch", "replay-visible"})
+    with _one_browser_at_a_time(config.profile):
+        if args.command == "login":
+            login(config)
+        elif args.command == "diagnose":
+            diagnose(config)
+        elif args.command == "replay-visible":
+            replay_visible(config)
+        else:
+            watch(config)
