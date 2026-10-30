@@ -66,6 +66,21 @@ def try_login(page, path: Path) -> bool:
     return True
 
 
+def browser_transport_dead(exc: BaseException) -> bool:
+    """Recognize destroyed Playwright browser transports, not ordinary DOM errors."""
+    from playwright.sync_api import Error as PlaywrightError
+    if not isinstance(exc, PlaywrightError):
+        return False
+    message = str(exc).lower()
+    return any(fragment in message for fragment in (
+        "target crashed",
+        "target page, context or browser has been closed",
+        "target closed",
+        "browser has been closed",
+        "connection closed",
+    ))
+
+
 class HealthMonitor:
     """A distinct admin-only Discord destination; never signal channels."""
     def __init__(self, config):
