@@ -3,9 +3,9 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
-from sktrader.recovery import HealthMonitor, login_state, private_credentials
+from sktrader.recovery import HealthMonitor, login_state, private_credentials, try_login
 
 
 class RecoveryTests(unittest.TestCase):
@@ -42,6 +42,42 @@ class RecoveryTests(unittest.TestCase):
                 send.assert_called_once()
                 monitor.healthy()
                 self.assertEqual(send.call_count, 2)
+
+    def test_username_login_in_same_form(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "login.json"
+            path.write_text(json.dumps({"email": "danny1888", "password": "secret"}))
+            path.chmod(0o600)
+            page = MagicMock()
+            password = page.locator.return_value
+            password.count.return_value = 1
+            form = password.locator.return_value
+            form.count.return_value = 1
+            username = form.locator.return_value
+            username.count.return_value = 1
+            button = form.get_by_role.return_value
+            button.count.return_value = 1
+            self.assertTrue(try_login(page, path))
+            username.fill.assert_called_once_with("danny1888")
+            password.fill.assert_called_once_with("secret")
+            button.click.assert_called_once()
+
+    def test_ambiguous_login_form_fails_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "login.json"
+            path.write_text(json.dumps({"email": "danny1888", "password": "secret"}))
+            path.chmod(0o600)
+            page = MagicMock()
+            page.locator.return_value.count.return_value = 2
+            with self.assertRaisesRegex(RuntimeError, "Ambiguous"):
+                try_login(page, path)
+            page.locator.return_value.fill.assert_not_called()
+
+    def test_health_delivery_failure_does_not_crash_watcher(self):
+        with patch.dict(os.environ, {"SKTRADER_HEALTH_CHANNEL_ID": "1565527732941754419"}):
+            monitor = HealthMonitor(MagicMock())
+        with patch("sktrader.watcher._bot_token", side_effect=PermissionError("private")):
+            monitor._send("monitoring interrupted")
 
     def test_health_default_has_no_signal_destination(self):
         with patch.dict(os.environ, {"SKTRADER_HEALTH_CHANNEL_ID": ""}):
