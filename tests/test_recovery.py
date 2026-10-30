@@ -57,13 +57,32 @@ class RecoveryTests(unittest.TestCase):
             form.count.return_value = 1
             username = form.locator.return_value
             username.count.return_value = 1
-            button = form.get_by_role.return_value
+            button = form.locator.return_value
             button.count.return_value = 1
             with patch.dict(sys.modules, {"playwright.sync_api": types.SimpleNamespace(TimeoutError=TimeoutError)}):
                 self.assertTrue(try_login(page, path))
             username.fill.assert_called_once_with("danny1888")
             password.fill.assert_called_once_with("secret")
             button.click.assert_called_once()
+
+    def test_multiple_submit_controls_fail_closed_before_credentials(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "login.json"
+            path.write_text(json.dumps({"email": "danny1888", "password": "secret"}))
+            path.chmod(0o600)
+            page = MagicMock()
+            password = page.locator.return_value
+            password.count.return_value = 1
+            form = password.locator.return_value
+            form.count.return_value = 1
+            user = form.locator.return_value
+            user.count.return_value = 1
+            form.locator.return_value.count.side_effect = [1, 2]
+            with patch.dict(sys.modules, {"playwright.sync_api": types.SimpleNamespace(TimeoutError=TimeoutError)}):
+                with self.assertRaisesRegex(RuntimeError, "Ambiguous JIFU submit"):
+                    try_login(page, path)
+            password.fill.assert_not_called()
+            user.fill.assert_not_called()
 
     def test_ambiguous_login_form_fails_closed(self):
         with tempfile.TemporaryDirectory() as directory:
