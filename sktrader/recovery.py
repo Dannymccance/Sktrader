@@ -36,13 +36,23 @@ def try_login(page, path: Path) -> bool:
     """Submit only an unambiguous email/password form. Never bypass 2FA/CAPTCHA."""
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
     creds = private_credentials(path)
-    user = page.locator('input[type="email"], input[autocomplete="username"]')
-    password = page.locator('input[type="password"]')
-    if user.count() != 1 or password.count() != 1:
-        raise RuntimeError("Ambiguous JIFU login form: interactive authentication required")
+    password = page.locator('input[type="password"]:visible')
+    if password.count() != 1:
+        raise RuntimeError("Ambiguous JIFU password field: interactive authentication required")
+    form = password.locator("xpath=ancestor::form[1]")
+    if form.count() != 1:
+        raise RuntimeError("JIFU login form not identified: interactive authentication required")
+    # Username is allowed: do not require an email-address field.
+    user = form.locator(
+        'input[type="email"]:visible, input[autocomplete="username"]:visible, '
+        'input[name="username"]:visible, input[name="login"]:visible, '
+        'input[name="email"]:visible, input[id="username"]:visible, input[id="email"]:visible'
+    )
+    if user.count() != 1:
+        raise RuntimeError("Ambiguous JIFU username field: interactive authentication required")
     user.fill(creds["email"])
     password.fill(creds["password"])
-    buttons = page.get_by_role("button", name=__import__("re").compile(r"^(sign in|log in|login)$", __import__("re").I))
+    buttons = form.get_by_role("button", name=__import__("re").compile(r"^(sign in|log in|login)$", __import__("re").I))
     if buttons.count() != 1:
         raise RuntimeError("Ambiguous JIFU sign-in button: interactive authentication required")
     buttons.click(timeout=10000)
@@ -84,17 +94,19 @@ class HealthMonitor:
         if not self.channel:
             return
         # Do not send health notices to any of the eight signal channels.
-        from sktrader.watcher import _bot_token
-        token = _bot_token(self.config.bot_token_file)
-        payload = json.dumps({"content": content, "allowed_mentions": {"parse": []}}).encode()
-        req = urllib.request.Request(
-            f"https://discord.com/api/v10/channels/{self.channel}/messages",
-            data=payload, method="POST",
-            headers={"Authorization": "Bot " + token, "Content-Type": "application/json"},
-        )
         try:
+            from sktrader.watcher import _bot_token
+            token = _bot_token(self.config.bot_token_file)
+            payload = json.dumps({"content": content, "allowed_mentions": {"parse": []}}).encode()
+            req = urllib.request.Request(
+                f"https://discord.com/api/v10/channels/{self.channel}/messages",
+                data=payload, method="POST",
+                headers={"Authorization": "Bot " + token, "Content-Type": "application/json"},
+            )
             with urllib.request.urlopen(req, timeout=10):
                 pass
-        except Exception:
-            # The monitoring loop must never crash because admin notifications fail.
-            __import__("logging").getLogger("sktrader").exception("Could not deliver admin-only JIFU health notification")
+        except Exception as exc:
+            # Admin channel errors must never interrupt collecting signals.
+            __import__("logging").getLogger("sktrader").warning(
+                "JIFU admin health notification failed (%s)", type(exc).__name__
+            )
