@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from sktrader.core import SnapshotError
 from sktrader.multi_scanners import (
-    SCANNER_CHANNELS, ScannerStore, discord_card, is_xauusd_card,
+    SCANNER_CHANNELS, EXISTING_SIGNAL_CHANNELS, ScannerStore, discord_card, is_xauusd_card,
     load_channels, parse_scanner_card, setup_channels,
 )
 from sktrader.watcher import Config, _send_scanner_pending
@@ -136,27 +136,85 @@ class MultiScannerTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "overlapping"):
                 load_channels(path, channel)
 
-    def test_setup_creates_seven_new_channels_and_reuses_auroux(self):
+    def test_remap_uses_existing_channels_without_creating_any(self):
         channel = 1565508564775075981
+        guild = "1200000000000000000"
+        category = "1300000000000000000"
         requests = []
-        next_id = iter(str(1600000000000000000 + i) for i in range(1, 8))
+        all_channels = [
+            {"id": str(channel) if scanner == "AUROUX"
+                   else str(1600000000000000000 + i),
+             "name": name, "parent_id": category, "type": 0}
+            for i, (scanner, name) in enumerate(EXISTING_SIGNAL_CHANNELS.items())
+        ]
+        # These are the unwanted duplicates: never use them for routing.
+        for i, name in enumerate(SCANNER_CHANNELS.values()):
+            all_channels.append({
+                "id": str(1700000000000000000 + i), "name": name,
+                "parent_id": category, "type": 0,
+            })
+        all_channels.append({
+            "id": "1800000000000000000", "name": "gws-signals",
+            "parent_id": category, "type": 0,
+        })
         def discord_request(_token, method, route, payload=None):
-            requests.append((method, route, payload))
+            requests.append((method, route))
+            self.assertEqual(method, "GET")
             if route == f"/channels/{channel}":
-                return {"guild_id": "1200000000000000000",
-                        "parent_id": "1300000000000000000"}
-            if method == "GET":
-                return []
-            return {"id": next(next_id)}
+                return {"guild_id": guild, "parent_id": category,
+                        "name": "auroux-signals", "type": 0}
+            self.assertEqual(route, f"/guilds/{guild}/channels")
+            return all_channels
+
         with tempfile.TemporaryDirectory() as tmp:
-            mapping = Path(tmp) / "channels.json"
+            mapping = Path(tmp) / "scanner-channels.json"
+            prior = {scanner: str(1700000000000000000 + i)
+                     for i, scanner in enumerate(EXISTING_SIGNAL_CHANNELS)}
+            prior["AUROUX"] = str(channel)
+            mapping.write_text(json.dumps(prior))
             with patch("sktrader.multi_scanners._discord_json", side_effect=discord_request):
                 channels = setup_channels("fake-token", channel, mapping)
+                again = setup_channels("fake-token", channel, mapping)
+            self.assertEqual(channels, again)
             self.assertEqual(channels["AUROUX"], channel)
             self.assertEqual(len(channels), 8)
-            self.assertEqual(sum(x[0] == "POST" for x in requests), 7)
             self.assertEqual(load_channels(mapping, channel), channels)
             self.assertEqual(mapping.stat().st_mode & 0o077, 0)
+            self.assertEqual(
+                json.loads(mapping.with_suffix(".legacy.json").read_text()), prior,
+            )
+            for scanner, expected_name in EXISTING_SIGNAL_CHANNELS.items():
+                self.assertEqual(
+                    next(c["name"] for c in all_channels if c["id"] == str(channels[scanner])),
+                    expected_name,
+                )
+            self.assertTrue(all(method == "GET" for method, _ in requests))
+
+    def test_remap_missing_channel_preserves_old_mapping(self):
+        channel = 1565508564775075981
+        guild = "1200000000000000000"
+        category = "1300000000000000000"
+        existing = [
+            {"id": str(channel) if scanner == "AUROUX"
+                   else str(1600000000000000000 + i),
+             "name": name, "parent_id": category, "type": 0}
+            for i, (scanner, name) in enumerate(EXISTING_SIGNAL_CHANNELS.items())
+            if scanner != "PRIME"
+        ]
+        def discord_request(_token, method, route, payload=None):
+            if route == f"/channels/{channel}":
+                return {"guild_id": guild, "parent_id": category,
+                        "name": "auroux-signals", "type": 0}
+            return existing
+        with tempfile.TemporaryDirectory() as tmp:
+            mapping = Path(tmp) / "scanner-channels.json"
+            previous = {"AUROUX": str(channel), "PRIME": "1600000000000000001"}
+            mapping.write_text(json.dumps(previous))
+            with patch("sktrader.multi_scanners._discord_json", side_effect=discord_request):
+                with self.assertRaisesRegex(ValueError, "prime-signals"):
+                    setup_channels("fake-token", channel, mapping)
+            self.assertEqual(json.loads(mapping.read_text()), previous)
+            self.assertFalse(mapping.with_suffix(".legacy.json").exists())
 
     def test_delivery_routes_by_scanner_without_crossposting(self):
         with tempfile.TemporaryDirectory() as tmp:

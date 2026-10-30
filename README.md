@@ -13,13 +13,13 @@ All other symbols (BTCUSDT, XAGUSD, NAS100USD, USDJPY, etc.) are ignored.
 | Scanner in JIFU | Discord channel |
 |---|---|
 | AUROUX | Existing channel ID `1565508564775075981` |
-| QUANTUM | `#xauusd-quantum` |
-| TREND WAVE | `#xauusd-trend-wave` |
-| NEXUS | `#xauusd-nexus` |
-| SNIPER PRO / SNIPERPRO | `#xauusd-sniper-pro` |
-| WOLF X / WOLFX | `#xauusd-wolf-x` |
-| HARMONICS | `#xauusd-harmonics` |
-| PRIME | `#xauusd-prime` |
+| QUANTUM | `#quantum-signals` |
+| TREND WAVE | `#trend-wave-signals` |
+| NEXUS | `#nexus-signals` |
+| SNIPER PRO / SNIPERPRO | `#sniper-pro-signals` |
+| WOLF X / WOLFX | `#wolfx-signals` |
+| HARMONICS | `#harmonics-signals` |
+| PRIME | `#prime-signals` |
 
 The bot posts **one card per new signal**, even for matching prices across
 different scanners or timeframes. It includes source, display age, XAUUSD,
@@ -55,13 +55,20 @@ owner-only mode, and must never be pasted into chat or committed to GitHub.
 The AUROUX channel remains
 `SKTRADER_DISCORD_CHANNEL_ID=1565508564775075981` in `.env`.
 
-### Create scanner channels once
+### Reuse the eight existing #*-signals channels (no manual IDs required)
 
-The bot must have **Manage Channels** permission in the same Discord server
-as AUROUX. The following command reads the AUROUX channel's server/category,
-reuses any existing exact-name channels in that category and creates only
-the seven missing text channels. It does not send alerts or alter DK
-Capital services.
+The first version of `setup-channels` created seven duplicate `xauusd-*`
+channels. Those were not needed because the Discord server already has
+`auroux-signals`, `quantum-signals`, `trend-wave-signals`,
+`nexus-signals`, `sniper-pro-signals`, `wolfx-signals`,
+`harmonics-signals`, and `prime-signals` under Signals.
+
+After updating GitHub `main`, **stop the watcher before running setup**.
+The revised `setup-channels` uses the existing bot's Discord GET endpoints
+to discover the real IDs for those eight exact names, requiring one of each
+in the same Discord category as the configured Auroux channel. It
+does **not** create, rename or delete channels, and sends no messages.
+`gws-signals` is left alone.
 
 ```bash
 cd /opt/sktrader
@@ -72,14 +79,17 @@ exec /opt/sktrader/.venv/bin/python -u -m sktrader setup-channels
 '
 ```
 
-The command writes private file
-`/var/lib/dkcapital-mt5-3/.local/share/sktrader/scanner-channels.json`,
-with all eight distinct channel IDs. If the bot lacks Manage Channels,
-create the seven named channels manually and write that same JSON mapping
-locally with restrictive permissions (owner `dkmt5c`, mode 0600), using
-only real Discord channel IDs. **Never map two scanners to one channel**.
-The watcher refuses to start when the mapping is absent, incomplete or
-has a wrong AUROUX ID.
+The command prints all eight verified scanner/channel IDs and updates
+`/var/lib/dkcapital-mt5-3/.local/share/sktrader/scanner-channels.json`
+privately and atomically. It retains a backup of the prior mapping
+(`scanner-channels.legacy.json`), without changing any Discord channels.
+If a name is missing or ambiguous, it refuses to overwrite the mapping.
+The watcher uses only this validated channel map. No manual ID collection
+or sharing credentials is necessary.
+
+The duplicate `xauusd-*` channels may be removed in Discord **after**
+testing that the original `*-signals` channels receive the correct
+XAUUSD alerts. Removal is a separate manual action, not part of setup.
 
 ### Start the visible watcher
 

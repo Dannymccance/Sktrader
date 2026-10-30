@@ -21,6 +21,18 @@ SCANNER_CHANNELS = {
     "HARMONICS": "xauusd-harmonics",
     "PRIME": "xauusd-prime",
 }
+# Reuse the established #*-signals channels shown in the user's server.
+# Do not create another xauusd-* set or touch #gws-signals.
+EXISTING_SIGNAL_CHANNELS = {
+    "QUANTUM": "quantum-signals",
+    "TREND WAVE": "trend-wave-signals",
+    "AUROUX": "auroux-signals",
+    "NEXUS": "nexus-signals",
+    "SNIPER PRO": "sniper-pro-signals",
+    "WOLF X": "wolfx-signals",
+    "HARMONICS": "harmonics-signals",
+    "PRIME": "prime-signals",
+}
 SCANNER_ALIASES = {
     **{name: name for name in SCANNER_CHANNELS},
     "SNIPERPRO": "SNIPER PRO", "WOLFX": "WOLF X", "TRENDWAVE": "TREND WAVE",
@@ -225,41 +237,61 @@ def _discord_json(token: str, method: str, route: str, payload: dict | None = No
 
 
 def setup_channels(token: str, auroux_channel: int, mapping_path: Path) -> dict[str, int]:
-    """Explicit one-time command. Creates seven channels beside existing Auroux."""
-    if mapping_path.exists():
-        return load_channels(mapping_path, auroux_channel)
-    existing_auroux = _discord_json(token, "GET", f"/channels/{auroux_channel}")
-    guild_id = str(existing_auroux.get("guild_id", ""))
-    category_id = existing_auroux.get("parent_id")
+    """Bind existing #*-signals channels. Never create or delete channels.
+
+    The existing AUROUX channel ID anchors the server and category. All eight
+    destination IDs are retrieved through authenticated Discord GET requests.
+    If anything is missing or ambiguous, leave the previous map untouched.
+    """
+    source = _discord_json(token, "GET", f"/channels/{auroux_channel}")
+    guild_id = str(source.get("guild_id", ""))
+    category_id = source.get("parent_id")
     if not SNOWFLAKE.fullmatch(guild_id):
         raise ValueError("Auroux destination is not a Discord server channel")
-    channels = _discord_json(token, "GET", f"/guilds/{guild_id}/channels")
-    mapping = {"AUROUX": str(auroux_channel)}
-    for scanner, name in SCANNER_CHANNELS.items():
-        if scanner == "AUROUX":
-            continue
+    if source.get("name") != EXISTING_SIGNAL_CHANNELS["AUROUX"] or source.get("type") != 0:
+        raise ValueError("Existing AUROUX channel must be #auroux-signals")
+    all_channels = _discord_json(token, "GET", f"/guilds/{guild_id}/channels")
+    if not isinstance(all_channels, list):
+        raise ValueError("Discord channel listing is invalid")
+
+    mapping = {}
+    for scanner, expected_name in EXISTING_SIGNAL_CHANNELS.items():
         matches = [
-            c for c in channels if c.get("name") == name
-            and c.get("parent_id") == category_id and c.get("type") == 0
+            ch for ch in all_channels
+            if ch.get("name") == expected_name
+            and ch.get("parent_id") == category_id
+            and ch.get("type") == 0
         ]
-        if len(matches) > 1:
-            raise ValueError(f"Ambiguous Discord channel for {scanner}")
-        if matches:
-            channel = matches[0]
-        else:
-            channel = _discord_json(
-                token, "POST", f"/guilds/{guild_id}/channels",
-                {"name": name, "type": 0, "parent_id": category_id,
-                 "topic": f"JIFU {scanner} XAUUSD alerts only"},
+        if len(matches) != 1:
+            raise ValueError(
+                f"Expected exactly one existing #{expected_name} in the same category; "
+                f"found {len(matches)}. No mappings changed."
             )
-        channel_id = str(channel["id"])
+        channel_id = str(matches[0].get("id", ""))
         if not SNOWFLAKE.fullmatch(channel_id):
-            raise ValueError("Invalid channel ID from Discord")
+            raise ValueError(f"Invalid Discord channel ID for #{expected_name}")
         mapping[scanner] = channel_id
+    if mapping["AUROUX"] != str(auroux_channel):
+        raise ValueError("Mapped AUROUX ID does not match configured existing channel")
     if len(set(mapping.values())) != len(mapping):
-        raise ValueError("Different scanner channels resolved to the same ID")
+        raise ValueError("Scanner channels must have distinct IDs")
+
+    # Save privately and atomically. Keep one copy of the prior xauusd-*
+    # mapping so it can be inspected after migration, if necessary.
     mapping_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    fd = os.open(str(mapping_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        json.dump(mapping, handle, sort_keys=True, indent=2)
-    return {scanner: int(cid) for scanner, cid in mapping.items()}
+    old_content = mapping_path.read_bytes() if mapping_path.exists() else None
+    backup = mapping_path.with_suffix(".legacy.json")
+    if old_content is not None and not backup.exists():
+        backup_fd = os.open(str(backup), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(backup_fd, "wb") as handle:
+            handle.write(old_content)
+    staging = mapping_path.with_suffix(".new")
+    fd = os.open(str(staging), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(mapping, handle, sort_keys=True, indent=2)
+        os.replace(staging, mapping_path)
+    finally:
+        if staging.exists():
+            staging.unlink()
+    return {scanner: int(channel_id) for scanner, channel_id in mapping.items()}
