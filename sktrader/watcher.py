@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from sktrader.core import Alert, AlertError, EventStore, SnapshotError, auroux_xauusd_card, parse_card
+from sktrader.core import Alert, AlertError, EventStore, SnapshotError, auroux_xauusd_card, merge_history_page, parse_card
 
 LOG = logging.getLogger("sktrader")
 DEFAULT_URL = "https://charts.jifulive.com/jifu/dashboard"
@@ -71,6 +71,46 @@ EXTRACT_CARDS_JS = r"""() => {
   }
   return cards;
 }"""
+
+# Used ONLY by manual replay-visible. Scroll the actual Alerts sidebar; never
+# scroll the chart/page or press any trading buttons. The sidebar can render
+# only ten most recent cards until its inner scroll container advances.
+SCROLL_ALERTS_JS = r"""(operation) => {
+  const tree = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  let label;
+  while ((label = tree.nextNode())) {
+    if ((label.nodeValue || '').trim().toLowerCase() === 'point of interest') {
+      const rect = label.parentElement?.getBoundingClientRect();
+      if (!rect || rect.left < window.innerWidth * 0.60 ||
+          rect.left >= window.innerWidth) continue;
+      let el = label.parentElement;
+      for (let depth = 0; depth < 18 && el; depth++, el = el.parentElement) {
+        const r = el.getBoundingClientRect();
+        const overflow = getComputedStyle(el).overflowY;
+        if (r.left < window.innerWidth * 0.60) break;
+        if (el.scrollHeight > el.clientHeight + 30 && /auto|scroll/.test(overflow)) {
+          const before = el.scrollTop;
+          if (operation === 'top') {
+            el.scrollTop = 0;
+          } else {
+            // Move under one viewport to preserve consecutive-card overlap
+            // in virtualised lists. Do not jump directly to the bottom.
+            el.scrollTop = Math.min(
+              el.scrollHeight - el.clientHeight,
+              el.scrollTop + Math.max(90, Math.floor(el.clientHeight * 0.45))
+            );
+          }
+          return {
+            found: true, moved: Math.abs(el.scrollTop - before) > 1,
+            bottom: el.scrollTop >= el.scrollHeight - el.clientHeight - 3
+          };
+        }
+      }
+    }
+  }
+  return { found: false, moved: false, bottom: true };
+}"""
+
 
 # Counts and booleans only, no signal prices, HTML, cookies, credentials or URLs.
 # The diagnostic distinguishes chart annotations from sidebar alert cards.
@@ -426,6 +466,43 @@ def diagnose(config: Config) -> None:
             context.close()
 
 
+def _collect_replay_history(page, *, max_scrolls: int = 60) -> tuple[list[str], list[str], int, bool]:
+    """Collect bounded older sidebar pages with strict overlap verification.
+
+    Return (historical cards, newest feed cards, number of scrolls, cap hit).
+    Any missing overlap aborts before the one-time replay is consumed.
+    """
+    if not 1 <= max_scrolls <= 200:
+        raise ValueError("SKTRADER_REPLAY_MAX_SCROLLS must be between 1 and 200")
+    scroll_info = page.evaluate(SCROLL_ALERTS_JS, "top")
+    page.wait_for_timeout(350)
+    latest = _read_feed_cards(page)
+    archive = list(latest)
+    if not scroll_info["found"]:
+        LOG.warning("No inner JIFU sidebar scrollbar identified; replaying latest cards only")
+        return archive, latest, 0, False
+
+    last_moved = False
+    for step in range(max_scrolls):
+        moved = page.evaluate(SCROLL_ALERTS_JS, "down")
+        if not moved["found"]:
+            raise SnapshotError("Lost JIFU sidebar scroll container during replay")
+        if not moved["moved"]:
+            # Give asynchronous pagination an opportunity to add older cards.
+            page.wait_for_timeout(900)
+            moved = page.evaluate(SCROLL_ALERTS_JS, "down")
+            if not moved["moved"]:
+                return archive, latest, step, False
+        last_moved = True
+        page.wait_for_timeout(700)
+        older_page = _read_feed_cards(page)
+        archive = merge_history_page(archive, older_page)
+        if (step + 1) % 10 == 0:
+            LOG.info("History scan: %s scrolls, %s unique ordered card positions",
+                     step + 1, len(archive))
+    return archive, latest, max_scrolls, last_moved
+
+
 def replay_visible(config: Config) -> None:
     """Manually queue one historical batch; never run under the live watcher."""
     from playwright.sync_api import sync_playwright
@@ -443,9 +520,23 @@ def replay_visible(config: Config) -> None:
             page.goto(config.url, wait_until="domcontentloaded", timeout=45000)
             _prepare_page(page)
             page.wait_for_timeout(5000)
-            cards = _read_feed_cards(page)
+            max_scrolls = int(os.getenv("SKTRADER_REPLAY_MAX_SCROLLS", "60"))
+            cards, latest, scrolls, capped = _collect_replay_history(
+                page, max_scrolls=max_scrolls,
+            )
+            LOG.info("Historical sidebar scan: %s cards across %s scrolls%s",
+                     len(cards), scrolls, " (configured limit reached)" if capped else "")
+            # If the history exceeds the scroll cap, avoid using up the
+            # one-time batch on a potentially truncated archive.
+            if capped:
+                raise SnapshotError(
+                    f"Historical scan reached SKTRADER_REPLAY_MAX_SCROLLS={max_scrolls} "
+                    "before reaching the end. Increase it and rerun; "
+                    "no historical replay batch has been queued."
+                )
             count, already_run = store.replay_visible_once(
                 cards, timeframe=config.timeframe, levels=config.levels,
+                feed_cursor=latest,
             )
             if already_run:
                 print("Historical Auroux replay batch was already queued; no new replay scheduled.")
