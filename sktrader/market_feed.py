@@ -69,7 +69,7 @@ class MarketFeed:
             raise ValueError("invalid broker identity")
         identity = rows[0]
         if (int(identity["login"]) != self.login or identity["mode"] != "DEMO"
-                or identity["currency"] != "USD"
+                or identity["currency"] not in ("USD", "GBP")
                 or not identity["server"]
                 or not identity["symbol"].startswith("XAUUSD")):
             raise ValueError("broker profile mismatch")
