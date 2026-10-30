@@ -368,8 +368,8 @@ def _alert_embed(event_id: int, observed_at: str, alert: Alert, *, historical: b
             "fields": [
                 {"name": "Point of Interest", "value": alert.poi, "inline": False},
                 {"name": "Invalidation", "value": alert.invalidation, "inline": False},
-                {"name": "Exit 1", "value": alert.tp1, "inline": False},
-                {"name": "Exit 2", "value": alert.tp2, "inline": False},
+                {"name": "Exit1", "value": alert.tp1, "inline": False},
+                {"name": "Exit2", "value": alert.tp2, "inline": False},
                 {"name": "Level", "value": f"{alert.level} pips", "inline": False},
             ],
         }],
