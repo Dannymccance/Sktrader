@@ -129,7 +129,7 @@ class PaperReplay:
             if last and stamp <= timestamp(last[0]):
                 raise RuntimeError("out-of-order tick feed; stop paper replay")
             with self.engine.db:
-                if (now-stamp).total_seconds() > 30 or (float(ask)-float(bid)) > 1.50:
+                if (now-stamp).total_seconds() > 30 or (stamp-now).total_seconds() > 5 or (float(ask)-float(bid)) > 1.50:
                     self._set_state("tick_cursor",rid)
                     continue
                 before={r[0]:r[1] for r in self.engine.db.execute(
