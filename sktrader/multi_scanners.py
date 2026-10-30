@@ -6,8 +6,8 @@ import os
 import re
 import sqlite3
 import urllib.request
-from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from dataclasses import asdict, dataclass, replace
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from sktrader.core import AlertError, SnapshotError, feed_fingerprint, new_prefix
 
@@ -59,6 +59,7 @@ class ScannerSignal:
     side: str
     relative_age: str
     fields: list[dict[str, str]]
+    observed_at: str | None = None
 
 
 def is_xauusd_card(text: str) -> bool:
@@ -98,11 +99,34 @@ def parse_scanner_card(text: str) -> ScannerSignal:
     )
 
 
-def discord_card(signal: ScannerSignal) -> dict:
+def _approximate_source_time(age: str, observed: datetime) -> int | None:
+    """JIFU provides relative age, not an exact issuance timestamp."""
+    if age.lower() == "just now":
+        return int(observed.timestamp())
+    match = re.fullmatch(r"(\d+|a|an) (second|minute|hour|day|week)s? ago", age.lower())
+    if not match:
+        return None
+    quantity = 1 if match.group(1) in {"a", "an"} else int(match.group(1))
+    seconds = {"second": 1, "minute": 60, "hour": 3600, "day": 86400, "week": 604800}[match.group(2)]
+    return int((observed - timedelta(seconds=quantity * seconds)).timestamp())
+
+
+def discord_card(signal: ScannerSignal, *, observed_at: str | None = None) -> dict:
+    """Show original approximate source age and durable detection time separately."""
+    timing = signal.relative_age
+    if observed_at or signal.observed_at:
+        observed = datetime.fromisoformat((observed_at or signal.observed_at).replace("Z", "+00:00"))
+        if observed.tzinfo is None:
+            raise ValueError("Signal observation timestamp must include timezone")
+        observed = observed.astimezone(timezone.utc)
+        issued = _approximate_source_time(signal.relative_age, observed)
+        if issued is not None:
+            timing += f"\n**Approx. JIFU time:** <t:{issued}:F> (estimated from relative age)"
+        timing += f"\n**Detected by Sktrader:** <t:{int(observed.timestamp())}:F>"
     return {
         "embeds": [{
             "title": signal.scanner,
-            "description": f"{signal.relative_age}\n\n**{signal.symbol}**\n**{signal.timeframe} - {signal.side}**",
+            "description": f"{timing}\n\n**{signal.symbol}**\n**{signal.timeframe} - {signal.side}**",
             "color": 0x22C55E if signal.side == "BUY" else 0xEF4444,
             "fields": [{**field, "inline": False} for field in signal.fields],
         }],
@@ -144,13 +168,13 @@ class ScannerStore:
         previous = self._snapshot()
         new_indices = new_prefix(previous, current) if previous is not None else []
         eligible = []
+        now = datetime.now(timezone.utc).isoformat()
         for i in reversed(new_indices):
             if is_xauusd_card(cards[i]):
                 try:
-                    eligible.append(parse_scanner_card(cards[i]))
+                    eligible.append(replace(parse_scanner_card(cards[i]), observed_at=now))
                 except AlertError as exc:
                     raise SnapshotError("Unparseable new XAUUSD scanner signal") from exc
-        now = datetime.now(timezone.utc).isoformat()
         with self.conn:
             for signal in eligible:
                 self.conn.execute(
@@ -170,14 +194,14 @@ class ScannerStore:
         if self.conn.execute("SELECT 1 FROM scanner_history_replay WHERE id=1").fetchone():
             return 0, True
         eligible = []
+        now = datetime.now(timezone.utc).isoformat()
         for card in reversed(cards):
             if is_xauusd_card(card):
                 try:
-                    eligible.append(parse_scanner_card(card))
+                    eligible.append(replace(parse_scanner_card(card), observed_at=now))
                 except AlertError as exc:
                     raise SnapshotError("Unparseable historical XAUUSD scanner card") from exc
         current = [feed_fingerprint(card) for card in newest]
-        now = datetime.now(timezone.utc).isoformat()
         with self.conn:
             for signal in eligible:
                 self.conn.execute(

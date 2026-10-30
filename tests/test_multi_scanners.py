@@ -1,5 +1,6 @@
 """Regression coverage for XAUUSD-only mixed-scanner Discord routing."""
 import json
+from datetime import datetime, timezone
 import tempfile
 import unittest
 from pathlib import Path
@@ -38,6 +39,35 @@ class MultiScannerTests(unittest.TestCase):
                 self.assertEqual(parsed.scanner, canonical)
                 self.assertEqual(parsed.symbol, "XAUUSD")
         self.assertEqual(set(SCANNER_CHANNELS), set(cases.values()))
+
+    def test_signal_time_uses_recorded_detection_not_delivery(self):
+        signal = parse_scanner_card(card("SNIPERPRO", age="2 minutes ago"))
+        content = discord_card(signal, observed_at="2026-10-30T08:02:00+00:00")["embeds"][0]["description"]
+        self.assertIn("Approx. JIFU time:", content)
+        self.assertIn("<t:1793347200:F>", content)  # 08:00 UTC approximate
+        self.assertIn("Detected by Sktrader:", content)
+        self.assertIn("<t:1793347320:F>", content)  # 08:02 UTC actual
+        self.assertIn("2 minutes ago", content)
+
+    def test_observation_timestamp_survives_restart(self):
+        with tempfile.TemporaryDirectory() as temp:
+            filename = Path(temp) / "signals.db"
+            store = ScannerStore(filename)
+            old = [card("PRIME", symbol="USDJPY")]
+            store.observe(old)
+            store.observe([card("SNIPERPRO", age="3 minutes ago")] + old)
+            _, signal = store.pending()[0]
+            self.assertIsNotNone(signal.observed_at)
+            self.assertIn("Detected by Sktrader", discord_card(signal)["embeds"][0]["description"])
+            observed = signal.observed_at
+            store.conn.close()
+            again = ScannerStore(filename)
+            self.assertEqual(again.pending()[0][1].observed_at, observed)
+            again.conn.close()
+
+    def test_legacy_queued_signal_remains_compatible(self):
+        signal = parse_scanner_card(card("NEXUS"))
+        self.assertNotIn("Detected by Sktrader", discord_card(signal)["embeds"][0]["description"])
 
     def test_other_markets_are_excluded(self):
         for symbol in ("BTCUSDT", "XAGUSD", "NAS100USD", "USDJPY", "EURJPY"):
