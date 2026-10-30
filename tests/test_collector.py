@@ -5,10 +5,10 @@ import unittest
 from pathlib import Path
 import os
 
-from sktrader.core import AlertError, EventStore, SnapshotError, auroux_xauusd_card, feed_fingerprint, new_prefix, parse_card
+from sktrader.core import AlertError, EventStore, SnapshotError, auroux_xauusd_card, feed_fingerprint, merge_history_page, new_prefix, parse_card
 from unittest.mock import patch
 from unittest import mock
-from sktrader.watcher import browser_geometry, _alert_embed, _read_alerts, _read_feed_cards, DIAG_JS, EXTRACT_CARDS_JS, PROBE_CARDS_JS, Config, _post_discord, _bot_token, _one_browser_at_a_time
+from sktrader.watcher import browser_geometry, _alert_embed, _read_alerts, _read_feed_cards, _collect_replay_history, DIAG_JS, EXTRACT_CARDS_JS, PROBE_CARDS_JS, SCROLL_ALERTS_JS, Config, _post_discord, _bot_token, _one_browser_at_a_time
 
 
 BUY = """AUROUX
@@ -209,6 +209,88 @@ Level
             self.assertEqual(store.observe_feed([cards[0]] + old), (1, False))
             self.assertEqual(store.pending()[0][2].timeframe, "30M")
             store.conn.close()
+
+
+class ScrollableHistoryTests(unittest.TestCase):
+    def test_history_appends_older_cards_using_two_card_overlap(self):
+        newest = [HARMONICS, WOLFX, PRIME]
+        older_page = [WOLFX, PRIME, BUY, SELL]
+        self.assertEqual(merge_history_page(newest, older_page),
+                         [HARMONICS, WOLFX, PRIME, BUY, SELL])
+        self.assertEqual(merge_history_page(newest, newest), newest)
+        self.assertEqual(
+            merge_history_page(newest, [WOLFX, PRIME]), newest
+        )
+
+    def test_history_refuses_ambiguous_one_card_overlap(self):
+        with self.assertRaisesRegex(SnapshotError, "two-card overlap"):
+            merge_history_page([HARMONICS, WOLFX, PRIME], [PRIME, BUY, SELL])
+
+    def test_scroller_is_limited_to_alerts_sidebar(self):
+        self.assertIn("window.innerWidth * 0.60", SCROLL_ALERTS_JS)
+        self.assertIn("el.scrollTop", SCROLL_ALERTS_JS)
+        self.assertNotIn("window.scrollTo", SCROLL_ALERTS_JS)
+        self.assertNotIn("outerHTML", SCROLL_ALERTS_JS)
+
+    def test_history_preserves_latest_feed_cursor(self):
+        latest = [HARMONICS, WOLFX, PRIME]
+        older = [HARMONICS, WOLFX, PRIME, BUY, SELL]
+        with tempfile.TemporaryDirectory() as folder:
+            store = EventStore(Path(folder) / "signals.db")
+            self.assertEqual(store.replay_visible_once(
+                older, timeframe="ALL", levels=frozenset({250, 500}),
+                feed_cursor=latest,
+            ), (2, False))
+            row = store.conn.execute(
+                "SELECT fingerprints FROM feed_snapshot WHERE id=1"
+            ).fetchone()
+            self.assertEqual(json.loads(row[0]), [feed_fingerprint(c) for c in latest])
+            self.assertEqual(store.observe_feed(latest), (0, False))
+            store.conn.close()
+
+    def test_collect_history_from_virtualised_scrollable_list(self):
+        latest = [HARMONICS, WOLFX, PRIME]
+        older = [WOLFX, PRIME, BUY, SELL]
+        class Page:
+            def __init__(self):
+                self.step = 0
+            def evaluate(self, script, action=None):
+                if script == SCROLL_ALERTS_JS:
+                    if action == "top":
+                        return {"found": True, "moved": False, "bottom": False}
+                    self.step += 1
+                    return {"found": True, "moved": self.step == 1,
+                            "bottom": self.step >= 2}
+                if script == EXTRACT_CARDS_JS:
+                    return latest if self.step == 0 else older
+                if script == DIAG_JS:
+                    return {"poi_labels": 3 if self.step == 0 else 4}
+                raise AssertionError("Unexpected page evaluation")
+            def wait_for_timeout(self, _ms):
+                pass
+
+        archive, cursor, steps, capped = _collect_replay_history(Page(), max_scrolls=4)
+        self.assertEqual(archive, latest + [BUY, SELL])
+        self.assertEqual(cursor, latest)
+        self.assertEqual(steps, 1)
+        self.assertFalse(capped)
+
+    def test_replay_scroll_cap_can_be_detected(self):
+        class Page:
+            def evaluate(self, script, action=None):
+                if script == SCROLL_ALERTS_JS:
+                    return {"found": True, "moved": True, "bottom": False}
+                if script == EXTRACT_CARDS_JS:
+                    return [HARMONICS, WOLFX, PRIME]
+                if script == DIAG_JS:
+                    return {"poi_labels": 3}
+                raise AssertionError("Unexpected page evaluation")
+            def wait_for_timeout(self, _ms):
+                pass
+
+        _, _, steps, capped = _collect_replay_history(Page(), max_scrolls=2)
+        self.assertEqual(steps, 2)
+        self.assertTrue(capped)
 
 
 class ReplayVisibleTests(unittest.TestCase):
