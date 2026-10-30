@@ -37,9 +37,9 @@ def timestamp(value):
 
 def exact_field(fields, name):
     matches = [str(f.get("value", "")).strip() for f in fields
-               if re.sub(r"\\s+", "", str(f.get("name", ""))).lower()
-               == re.sub(r"\\s+", "", name).lower()]
-    if len(matches) != 1 or not re.fullmatch(r"\\d+(?:\\.\\d+)?", matches[0]):
+               if re.sub(r"\s+", "", str(f.get("name", ""))).lower()
+               == re.sub(r"\s+", "", name).lower()]
+    if len(matches) != 1 or not re.fullmatch(r"\d+(?:\.\d+)?", matches[0]):
         raise ValueError("missing/ambiguous " + name)
     return number(matches[0])
 
