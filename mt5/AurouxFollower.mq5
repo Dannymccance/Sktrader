@@ -9,7 +9,6 @@ input bool RoundVolumeUp = true;
 input ulong MagicNumber = 2601030;
 input int EntryTolerancePoints = 10;
 input int CheckMilliseconds = 100;
-input int EntryValiditySeconds = 180;
 input bool SkipHistoryOnFirstStart = true;
 string checkpoint;
 
@@ -91,24 +90,37 @@ bool Execute(long id,string direction,double poi,double sl,double tp,long deadli
    MqlTick tick;
    if(!SymbolInfoTick(_Symbol,tick)) return false;
    ENUM_ORDER_TYPE side=buy?ORDER_TYPE_BUY:ORDER_TYPE_SELL;
+   double current=buy?tick.ask:tick.bid;
+   double tolerance=EntryTolerancePoints*SymbolInfoDouble(_Symbol,SYMBOL_POINT);
+   bool market=MathAbs(current-poi)<=tolerance;
+   // Outside the POI tolerance, submit only a broker-expiring pending order.
+   // A broker that cannot enforce expiration must not retain a GTC order.
+   int expirationModes=(int)SymbolInfoInteger(_Symbol,SYMBOL_EXPIRATION_MODE);
+   bool supportsExpiry=((expirationModes & SYMBOL_EXPIRATION_SPECIFIED)!=0);
+   if(!market && !supportsExpiry) {
+      Print("AUROUX pending rejected: broker does not support specified expiration ",id);
+      return true;
+   }
+   double pricedEntry=market?current:poi;
+   ENUM_ORDER_TYPE_TIME expiryType=ORDER_TIME_SPECIFIED;
+   datetime brokerExpiry=(datetime)((long)TimeTradeServer() + deadline-(long)TimeGMT());
+   if(!market && brokerExpiry<=(datetime)TimeTradeServer()) return true;
    double loss=0;
-   if(!OrderCalcProfit(side,_Symbol,1.0,poi,sl,loss) || loss>=0) return false;
+   if(!OrderCalcProfit(side,_Symbol,1.0,pricedEntry,sl,loss) || loss>=0) return false;
    double volume=RoundedVolume(AccountInfoDouble(ACCOUNT_BALANCE)*RiskPercent/100.0/(-loss));
    if(volume==0) { Print("Volume outside broker min/max: ",id); return true; }
    trade.SetExpertMagicNumber(MagicNumber);
    trade.SetTypeFillingBySymbol(_Symbol);
    string note=SignalComment(id);
-   double current=buy?tick.ask:tick.bid;
-   double tolerance=EntryTolerancePoints*SymbolInfoDouble(_Symbol,SYMBOL_POINT);
    bool success=false;
-   if(MathAbs(current-poi)<=tolerance) {
+   if(market) {
       success=buy?trade.Buy(volume,_Symbol,0,sl,tp,note):trade.Sell(volume,_Symbol,0,sl,tp,note);
    } else if(buy) {
-      success=poi<current?trade.BuyLimit(volume,poi,_Symbol,sl,tp,ORDER_TIME_GTC,0,note)
-                         :trade.BuyStop(volume,poi,_Symbol,sl,tp,ORDER_TIME_GTC,0,note);
+      success=poi<current?trade.BuyLimit(volume,poi,_Symbol,sl,tp,expiryType,brokerExpiry,note)
+                         :trade.BuyStop(volume,poi,_Symbol,sl,tp,expiryType,brokerExpiry,note);
    } else {
-      success=poi>current?trade.SellLimit(volume,poi,_Symbol,sl,tp,ORDER_TIME_GTC,0,note)
-                         :trade.SellStop(volume,poi,_Symbol,sl,tp,ORDER_TIME_GTC,0,note);
+      success=poi>current?trade.SellLimit(volume,poi,_Symbol,sl,tp,expiryType,brokerExpiry,note)
+                         :trade.SellStop(volume,poi,_Symbol,sl,tp,expiryType,brokerExpiry,note);
    }
    uint ret=trade.ResultRetcode();
    bool accepted=success && (ret==TRADE_RETCODE_DONE || ret==TRADE_RETCODE_PLACED || ret==TRADE_RETCODE_DONE_PARTIAL);
