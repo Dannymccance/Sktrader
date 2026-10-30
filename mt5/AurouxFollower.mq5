@@ -52,7 +52,7 @@ bool WasSubmitted(long id) {
    return false;
 }
 bool Execute(long id,string direction,double poi,double sl,double tp) {
-   if(_Symbol!="XAUUSD" && StringFind(_Symbol,"XAUUSD")!=0) { Print("Attach to broker XAUUSD chart"); return false; }
+   if(_Symbol!="XAUUSD" && _Symbol!="XAUUSD+") { Print("Attach to broker XAUUSD chart"); return false; }
    if(WasSubmitted(id)) return true;
    // One AUROUX position or working order at a time, including across restarts.
    if(HasOpenAuroux()) { Print("AUROUX exposure already open, skipping signal ",id); return true; }
