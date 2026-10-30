@@ -150,6 +150,18 @@ class PaperReplay:
                                      "exit":exit_price,"lots":lots,"net_pnl_usd":pnl,
                                      "market_time":stamp.isoformat()},now.isoformat())
                 self._set_state("tick_cursor",rid)
+        # Expire pending simulation intents using wall-clock time even when
+        # XAUUSD is closed and no new broker quotes arrive.
+        with self.engine.db:
+            for eid,scanner,expiry in self.engine.db.execute(
+                "SELECT event_id,scanner,expiry FROM paper_signals "
+                "WHERE state='PENDING' AND expiry IS NOT NULL").fetchall():
+                if now >= timestamp(expiry):
+                    self.engine.db.execute(
+                        "UPDATE paper_signals SET state='EXPIRED' WHERE event_id=?", (eid,))
+                    self._audit(eid,scanner,"ORDER_EXPIRED",
+                                {"state":"EXPIRED","reason":"signal validity window elapsed"},
+                                now.isoformat())
         return len(rows)
 
     def pending_notifications(self):
