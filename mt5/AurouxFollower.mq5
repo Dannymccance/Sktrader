@@ -9,6 +9,7 @@ input bool RoundVolumeUp = true;
 input ulong MagicNumber = 2601030;
 input int EntryTolerancePoints = 10;
 input int CheckMilliseconds = 100;
+input int EntryValiditySeconds = 180;
 input bool SkipHistoryOnFirstStart = true;
 string checkpoint;
 
@@ -51,7 +52,34 @@ bool WasSubmitted(long id) {
    }
    return false;
 }
-bool Execute(long id,string direction,double poi,double sl,double tp) {
+void CancelExpiredPending() {
+   int handle=FileOpen(SignalFile,FILE_READ|FILE_CSV|FILE_COMMON|FILE_ANSI,';');
+   if(handle==INVALID_HANDLE) return;
+   long now=(long)TimeGMT();
+   while(!FileIsEnding(handle)) {
+      long id=(long)StringToInteger(FileReadString(handle));
+      if(FileIsEnding(handle)) break;
+      FileReadString(handle); FileReadString(handle); FileReadString(handle); FileReadString(handle);
+      long deadline=(long)StringToInteger(FileReadString(handle));
+      if(id<=0 || deadline<=0 || now<deadline) continue;
+      string note=SignalComment(id);
+      for(int i=OrdersTotal()-1;i>=0;i--) {
+         ulong ticket=OrderGetTicket(i);
+         if(ticket==0 || OrderGetInteger(ORDER_MAGIC)!=(long)MagicNumber
+            || OrderGetString(ORDER_COMMENT)!=note) continue;
+         trade.SetExpertMagicNumber(MagicNumber);
+         if(!trade.OrderDelete(ticket))
+            Print("AUROUX expired pending cancellation failed ",id," ticket ",ticket,
+                  " ",trade.ResultRetcodeDescription());
+      }
+   }
+   FileClose(handle);
+}
+bool Execute(long id,string direction,double poi,double sl,double tp,long deadline) {
+   if(deadline<=0 || (long)TimeGMT()>=deadline) {
+      Print("AUROUX expired signal ignored ",id);
+      return true;
+   }
    if(_Symbol!="XAUUSD" && _Symbol!="XAUUSD+") { Print("Attach to broker XAUUSD chart"); return false; }
    if(WasSubmitted(id)) return true;
    // One AUROUX position or working order at a time, including across restarts.
@@ -95,7 +123,7 @@ long LatestId() {
    while(!FileIsEnding(handle)) {
       string id=FileReadString(handle);
       if(FileIsEnding(handle)) break;
-      FileReadString(handle);FileReadString(handle);FileReadString(handle);FileReadString(handle);
+      FileReadString(handle);FileReadString(handle);FileReadString(handle);FileReadString(handle);FileReadString(handle);
       long n=(long)StringToInteger(id);
       if(n>latest) latest=n;
    }
@@ -118,6 +146,7 @@ int OnInit() {
 }
 void OnDeinit(const int reason) { EventKillTimer(); }
 void OnTimer() {
+   CancelExpiredPending();
    int handle=FileOpen(SignalFile,FILE_READ|FILE_CSV|FILE_COMMON|FILE_ANSI,';');
    if(handle==INVALID_HANDLE) return;
    if(!GlobalVariableCheck(checkpoint)) {
@@ -135,9 +164,10 @@ void OnTimer() {
       double poi=StringToDouble(FileReadString(handle));
       double sl=StringToDouble(FileReadString(handle));
       double tp=StringToDouble(FileReadString(handle));
+      long deadline=(long)StringToInteger(FileReadString(handle));
       long n=(long)StringToInteger(id);
       if(n<=checkpointId || n<=0) continue;
-      if(!Execute(n,direction,poi,sl,tp)) break;
+      if(!Execute(n,direction,poi,sl,tp,deadline)) break;
       checkpointId=n;
       GlobalVariableSet(checkpoint,(double)checkpointId);
       GlobalVariablesFlush();
