@@ -55,7 +55,7 @@ class MultiScannerTests(unittest.TestCase):
         content = discord_card(
             signal, observed_at="2026-10-30T09:02:37.800+01:00"
         )["embeds"][0]["description"]
-        self.assertIn("Detected by Sktrader: ", content)
+        self.assertIn("**Detected by Sktrader:**", content)
         self.assertIn("2026-10-30 08:02:37 UTC", content)
         self.assertNotIn("2026-10-30 08:02:00 UTC", content)
 
