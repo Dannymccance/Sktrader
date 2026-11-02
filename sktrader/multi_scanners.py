@@ -122,7 +122,7 @@ def discord_card(signal: ScannerSignal, *, observed_at: str | None = None) -> di
         issued = _approximate_source_time(signal.relative_age, observed)
         if issued is not None:
             timing += f"\n**Approx. JIFU time:** <t:{issued}:F> (estimated from relative age)"
-        timing += f"\n**Detected by Sktrader:** <t:{int(observed.timestamp())}:F>"
+        timing += (\n            "\n**Detected by Sktrader:** "\n            f"{observed.strftime('%Y-%m-%d %H:%M:%S')} UTC"\n        )
     return {
         "embeds": [{
             "title": signal.scanner,
