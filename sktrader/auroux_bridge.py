@@ -59,6 +59,23 @@ def deadline_epoch(signal: dict) -> int | None:
     return int(observed_epoch - elapsed + 180)
 
 
+def order_instruction(signal: dict) -> str:
+    """Only an explicit source instruction can create a pending order."""
+    allowed = {"MARKET", "BUY_LIMIT", "SELL_LIMIT", "BUY_STOP", "SELL_STOP"}
+    fields = signal.get("fields", [])
+    matches = [str(f.get("value", "")).strip().upper().replace(" ", "_")
+               for f in fields if str(f.get("name", "")).strip().lower().replace(" ", "") in
+               ("ordertype", "entrytype")]
+    if len(matches) > 1:
+        raise ValueError("ambiguous order type")
+    instruction = matches[0] if matches else "MARKET"
+    if instruction not in allowed:
+        raise ValueError("unsupported order type")
+    if instruction != "MARKET" and not instruction.startswith(signal["side"] + "_"):
+        raise ValueError("order type conflicts with side")
+    return instruction
+
+
 def export_lines(connection: sqlite3.Connection) -> list[str]:
     rows = connection.execute("SELECT id,payload FROM scanner_events ORDER BY id").fetchall()
     result: list[str] = []
@@ -74,6 +91,7 @@ def export_lines(connection: sqlite3.Connection) -> list[str]:
             poi = price_field(fields, "Point of Interest")
             sl = price_field(fields, "Invalidation")
             tp = price_field(fields, "Exit1")
+            order_type = order_instruction(signal)
             deadline = deadline_epoch(signal)
             if deadline is None:
                 raise ValueError("unknown issue age")
