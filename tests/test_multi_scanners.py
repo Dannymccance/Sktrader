@@ -46,8 +46,18 @@ class MultiScannerTests(unittest.TestCase):
         self.assertIn("Approx. JIFU time:", content)
         self.assertIn("<t:1793347200:F>", content)  # 08:00 UTC approximate
         self.assertIn("Detected by Sktrader:", content)
-        self.assertIn("<t:1793347320:F>", content)  # 08:02 UTC actual
+        self.assertIn("2026-10-30 08:02:00 UTC", content)  # 08:02:00 UTC actual
         self.assertIn("2 minutes ago", content)
+
+    def test_signal_detection_shows_seconds_not_delivery_time(self):
+        signal = parse_scanner_card(card("AUROUX", age="just now"))
+        # Preserve the captured second and normalize a timezone offset to UTC.
+        content = discord_card(
+            signal, observed_at="2026-10-30T09:02:37.800+01:00"
+        )["embeds"][0]["description"]
+        self.assertIn("**Detected by Sktrader:**", content)
+        self.assertIn("2026-10-30 08:02:37 UTC", content)
+        self.assertNotIn("2026-10-30 08:02:00 UTC", content)
 
     def test_coverage_records_multiline_jifu_cards_without_reposting(self):
         # JIFU's DOM cards contain line breaks between scanner and age.
