@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from datetime import datetime, timezone
 
-from sktrader.auroux_bridge import export_lines, export_once, price_field, deadline_epoch
+from sktrader.auroux_bridge import export_lines, export_once, price_field, deadline_epoch, order_instruction
 
 
 class AurouxBridgeTests(unittest.TestCase):
@@ -27,6 +27,28 @@ class AurouxBridgeTests(unittest.TestCase):
         con.execute("INSERT INTO scanner_events VALUES(?,?)", (21, json.dumps(self.event())))
         con.execute("INSERT INTO scanner_events VALUES(?,?)", (22, json.dumps(self.event(scanner="NEXUS"))))
         self.assertEqual(export_lines(con), [f"21;BUY;4000.50000000;3990.00000000;4010.00000000;{int(datetime(2026,10,30,20,2,1,tzinfo=timezone.utc).timestamp())}\n"])
+
+    def test_market_default_and_explicit_pending(self):
+        event = self.event()
+        self.assertEqual(order_instruction(event), "MARKET")
+        event["fields"].append({"name": "Order Type", "value": "BUY LIMIT"})
+        self.assertEqual(order_instruction(event), "BUY_LIMIT")
+
+    def test_invalid_pending_instructions_fail_closed(self):
+        for instruction in ("SELL LIMIT", "UNKNOWN", "BUY STOP LIMIT"):
+            with self.subTest(instruction=instruction):
+                event = self.event()
+                event["fields"].append({"name": "Order Type", "value": instruction})
+                with self.assertRaises(ValueError):
+                    order_instruction(event)
+
+    def test_explicit_pending_written_to_bridge(self):
+        con = sqlite3.connect(":memory:")
+        con.execute("CREATE TABLE scanner_events(id INTEGER PRIMARY KEY, payload TEXT)")
+        event = self.event()
+        event["fields"].append({"name": "Order Type", "value": "BUY STOP"})
+        con.execute("INSERT INTO scanner_events VALUES (?,?)", (99, json.dumps(event)))
+        self.assertTrue(export_lines(con)[0].rstrip().endswith(";BUY_STOP"))
 
     def test_conservative_age_and_missing_timestamp(self):
         event = self.event()
