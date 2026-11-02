@@ -140,7 +140,6 @@ bool Execute(long id,string direction,double poi,double sl,double tp,long deadli
    datetime brokerExpiry=(datetime)((long)TimeTradeServer()+deadline-(long)TimeGMT());
    if(!market && brokerExpiry<=(datetime)TimeTradeServer()) return true;
    double loss=0;
-   ENUM_ORDER_TYPE side=buy?ORDER_TYPE_BUY:ORDER_TYPE_SELL;
    if(!OrderCalcProfit(side,_Symbol,1.0,pricedEntry,sl,loss) || loss>=0) {
       Print("AUROUX invalid account-currency loss calculation ",id);
       return true;
