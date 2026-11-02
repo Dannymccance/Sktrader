@@ -1,16 +1,32 @@
 // AUROUX XAUUSD follower. Standalone from GWS. Compile in MetaEditor (MT5).
 #property strict
-#property version "1.00"
+#property version "1.10"
 #include <Trade/Trade.mqh>
 CTrade trade;
 input string SignalFile = "auroux_signals.csv"; // MT5 Terminal Common/Files
 input double RiskPercent = 4.0;
-input bool RoundVolumeUp = true;
+input bool RoundVolumeUp = false; // Never round above the risk budget
 input ulong MagicNumber = 2601030;
-input int EntryTolerancePoints = 10;
+input double MaxAdversePOIFraction = 0.10; // Reject >10% adverse move versus POI
+input int WeeklyOpenSundayUTCMinute = 1320; // 22:00 UTC; set to actual weekly broker open, adjust for DST
+input int MarketOpenBlockMinutes = 180;
 input int CheckMilliseconds = 100;
 input bool SkipHistoryOnFirstStart = true;
 string checkpoint;
+
+bool InMarketOpenBlock() {
+   if(WeeklyOpenSundayUTCMinute<0 || WeeklyOpenSundayUTCMinute>=1440 || MarketOpenBlockMinutes<0) return true;
+   MqlDateTime t; TimeToStruct(TimeGMT(),t);
+   int minuteOfWeek=t.day_of_week*1440+t.hour*60+t.min;
+   int openMinute=WeeklyOpenSundayUTCMinute;
+   int since=(minuteOfWeek-openMinute+10080)%10080;
+   return since<MarketOpenBlockMinutes;
+}
+
+bool IsPending(string orderType) {
+   return orderType=="BUY_LIMIT" || orderType=="SELL_LIMIT" || orderType=="BUY_STOP" || orderType=="SELL_STOP";
+}
+
 
 string SignalComment(long id) { return "AUR#" + IntegerToString(id); }
 
@@ -60,6 +76,7 @@ void CancelExpiredPending() {
       if(FileIsEnding(handle)) break;
       FileReadString(handle); FileReadString(handle); FileReadString(handle); FileReadString(handle);
       long deadline=(long)StringToInteger(FileReadString(handle));
+      FileReadString(handle); // explicit order type, or MARKET for old records
       if(id<=0 || deadline<=0 || now<deadline) continue;
       string note=SignalComment(id);
       for(int i=OrdersTotal()-1;i>=0;i--) {
@@ -74,13 +91,16 @@ void CancelExpiredPending() {
    }
    FileClose(handle);
 }
-bool Execute(long id,string direction,double poi,double sl,double tp,long deadline) {
+bool Execute(long id,string direction,double poi,double sl,double tp,long deadline,string orderType) {
    if(deadline<=0 || (long)TimeGMT()>=deadline) {
       Print("AUROUX expired signal ignored ",id);
       return true;
    }
    if(_Symbol!="XAUUSD" && _Symbol!="XAUUSD+") { Print("Attach to broker XAUUSD chart"); return false; }
    if(WasSubmitted(id)) return true;
+   if(InMarketOpenBlock()) { Print("AUROUX weekly open exclusion ignored ",id); return true; }
+   if(orderType=="" || orderType=="MARKET") orderType="MARKET";
+   else if(!IsPending(orderType)) { Print("AUROUX unsupported order instruction ",id); return true; }
    // One AUROUX position or working order at a time, including across restarts.
    if(HasOpenAuroux()) { Print("AUROUX exposure already open, skipping signal ",id); return true; }
    bool buy=direction=="BUY";
@@ -91,42 +111,66 @@ bool Execute(long id,string direction,double poi,double sl,double tp,long deadli
    if(!SymbolInfoTick(_Symbol,tick)) return false;
    ENUM_ORDER_TYPE side=buy?ORDER_TYPE_BUY:ORDER_TYPE_SELL;
    double current=buy?tick.ask:tick.bid;
-   double tolerance=EntryTolerancePoints*SymbolInfoDouble(_Symbol,SYMBOL_POINT);
-   bool market=MathAbs(current-poi)<=tolerance;
-   // Outside the POI tolerance, submit only a broker-expiring pending order.
-   // A broker that cannot enforce expiration must not retain a GTC order.
-   int expirationModes=(int)SymbolInfoInteger(_Symbol,SYMBOL_EXPIRATION_MODE);
-   bool supportsExpiry=((expirationModes & SYMBOL_EXPIRATION_SPECIFIED)!=0);
-   if(!market && !supportsExpiry) {
-      Print("AUROUX pending rejected: broker does not support specified expiration ",id);
+   bool market=(orderType=="MARKET");
+   double pricedEntry=market?current:poi;
+   double originalRisk=MathAbs(poi-sl);
+   double adverse=buy?(current-poi):(poi-current);
+   if(market && (adverse>MaxAdversePOIFraction*originalRisk ||
+      (buy && !(sl<current && current<tp)) ||
+      (!buy && !(tp<current && current<sl)))) {
+      Print("AUROUX market price outside safe POI/SL/TP bounds ",id);
       return true;
    }
-   double pricedEntry=market?current:poi;
-   ENUM_ORDER_TYPE_TIME expiryType=ORDER_TIME_SPECIFIED;
-   datetime brokerExpiry=(datetime)((long)TimeTradeServer() + deadline-(long)TimeGMT());
+   if(MaxAdversePOIFraction<0 || MaxAdversePOIFraction>1) {
+      Print("AUROUX invalid adverse-slippage configuration ",id);
+      return true;
+   }
+   if(!market) {
+      if((direction=="BUY" && orderType!="BUY_LIMIT" && orderType!="BUY_STOP") ||
+         (direction=="SELL" && orderType!="SELL_LIMIT" && orderType!="SELL_STOP")) return true;
+      bool validPending=(orderType=="BUY_LIMIT" && poi<tick.ask) ||
+                        (orderType=="BUY_STOP" && poi>tick.ask) ||
+                        (orderType=="SELL_LIMIT" && poi>tick.bid) ||
+                        (orderType=="SELL_STOP" && poi<tick.bid);
+      if(!validPending) { Print("AUROUX invalid explicit pending order position ",id); return true; }
+   }
+   int expirationModes=(int)SymbolInfoInteger(_Symbol,SYMBOL_EXPIRATION_MODE);
+   bool supportsExpiry=((expirationModes & SYMBOL_EXPIRATION_SPECIFIED)!=0);
+   if(!market && !supportsExpiry) { Print("AUROUX pending expiration unsupported ",id); return true; }
+   datetime brokerExpiry=(datetime)((long)TimeTradeServer()+deadline-(long)TimeGMT());
    if(!market && brokerExpiry<=(datetime)TimeTradeServer()) return true;
    double loss=0;
-   if(!OrderCalcProfit(side,_Symbol,1.0,pricedEntry,sl,loss) || loss>=0) return false;
-   double volume=RoundedVolume(AccountInfoDouble(ACCOUNT_BALANCE)*RiskPercent/100.0/(-loss));
-   if(volume==0) { Print("Volume outside broker min/max: ",id); return true; }
+   if(!OrderCalcProfit(side,_Symbol,1.0,pricedEntry,sl,loss) || loss>=0) {
+      Print("AUROUX invalid account-currency loss calculation ",id);
+      return true;
+   }
+   double budget=AccountInfoDouble(ACCOUNT_BALANCE)*RiskPercent/100.0;
+   if(RiskPercent<=0 || RiskPercent>4.0) { Print("AUROUX risk above 4% ceiling ",id); return true; }
+   double volume=RoundedVolume(budget/(-loss));
+   if(volume<=0 || volume*(-loss)>budget+0.00001) {
+      Print("AUROUX volume exceeds risk budget ",id);
+      return true;
+   }
    trade.SetExpertMagicNumber(MagicNumber);
    trade.SetTypeFillingBySymbol(_Symbol);
    string note=SignalComment(id);
    bool success=false;
    if(market) {
       success=buy?trade.Buy(volume,_Symbol,0,sl,tp,note):trade.Sell(volume,_Symbol,0,sl,tp,note);
-   } else if(buy) {
-      success=poi<current?trade.BuyLimit(volume,poi,_Symbol,sl,tp,expiryType,brokerExpiry,note)
-                         :trade.BuyStop(volume,poi,_Symbol,sl,tp,expiryType,brokerExpiry,note);
-   } else {
-      success=poi>current?trade.SellLimit(volume,poi,_Symbol,sl,tp,expiryType,brokerExpiry,note)
-                         :trade.SellStop(volume,poi,_Symbol,sl,tp,expiryType,brokerExpiry,note);
+   } else if(orderType=="BUY_LIMIT") {
+      success=trade.BuyLimit(volume,poi,_Symbol,sl,tp,ORDER_TIME_SPECIFIED,brokerExpiry,note);
+   } else if(orderType=="BUY_STOP") {
+      success=trade.BuyStop(volume,poi,_Symbol,sl,tp,ORDER_TIME_SPECIFIED,brokerExpiry,note);
+   } else if(orderType=="SELL_LIMIT") {
+      success=trade.SellLimit(volume,poi,_Symbol,sl,tp,ORDER_TIME_SPECIFIED,brokerExpiry,note);
+   } else if(orderType=="SELL_STOP") {
+      success=trade.SellStop(volume,poi,_Symbol,sl,tp,ORDER_TIME_SPECIFIED,brokerExpiry,note);
    }
    uint ret=trade.ResultRetcode();
    bool accepted=success && (ret==TRADE_RETCODE_DONE || ret==TRADE_RETCODE_PLACED || ret==TRADE_RETCODE_DONE_PARTIAL);
    if(!accepted) Print("AUROUX ",id," failed: ",ret," ",trade.ResultRetcodeDescription());
    else Print("AUROUX ",id," submitted ",direction," ",volume," lots at POI ",poi," SL ",sl," TP1 ",tp);
-   return accepted;
+   return true; // Checkpoint rejected signals; never flood broker with retries.
 }
 long LatestId() {
    int handle=FileOpen(SignalFile,FILE_READ|FILE_CSV|FILE_COMMON|FILE_ANSI,';');
@@ -135,7 +179,7 @@ long LatestId() {
    while(!FileIsEnding(handle)) {
       string id=FileReadString(handle);
       if(FileIsEnding(handle)) break;
-      FileReadString(handle);FileReadString(handle);FileReadString(handle);FileReadString(handle);FileReadString(handle);
+      FileReadString(handle);FileReadString(handle);FileReadString(handle);FileReadString(handle);FileReadString(handle);FileReadString(handle);
       long n=(long)StringToInteger(id);
       if(n>latest) latest=n;
    }
@@ -177,9 +221,10 @@ void OnTimer() {
       double sl=StringToDouble(FileReadString(handle));
       double tp=StringToDouble(FileReadString(handle));
       long deadline=(long)StringToInteger(FileReadString(handle));
+      string orderType=FileReadString(handle);
       long n=(long)StringToInteger(id);
       if(n<=checkpointId || n<=0) continue;
-      if(!Execute(n,direction,poi,sl,tp,deadline)) break;
+      if(!Execute(n,direction,poi,sl,tp,deadline,orderType)) break;
       checkpointId=n;
       GlobalVariableSet(checkpoint,(double)checkpointId);
       GlobalVariablesFlush();
