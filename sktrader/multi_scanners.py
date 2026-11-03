@@ -137,6 +137,33 @@ def discord_card(signal: ScannerSignal, *, observed_at: str | None = None) -> di
     }
 
 
+def _prefix_with_skipped_older_cards(previous: list[str], current: list[str]) -> list[int]:
+    """Recover new top-of-feed cards when an older DOM card was skipped.
+
+    Require the previous newest card AND at least one more old card in the
+    same relative order. One matching price/identity alone is insufficient.
+    Never infer cards that are absent from the current JIFU DOM.
+    """
+    candidates = []
+    for offset, fingerprint in enumerate(current):
+        if fingerprint != previous[0]:
+            continue
+        old_index = 1
+        matches = 1
+        for value in current[offset + 1:]:
+            while old_index < len(previous) and previous[old_index] != value:
+                old_index += 1
+            if old_index == len(previous):
+                break
+            matches += 1
+            old_index += 1
+        if matches >= 2:
+            candidates.append(offset)
+    if len(candidates) != 1:
+        raise SnapshotError("Insufficient or ambiguous ordered overlap in partial JIFU feed")
+    return list(range(candidates[0]))
+
+
 class ScannerStore:
     """Separate XAUUSD mixed-feed state from prior Auroux-only SQLite history."""
     def __init__(self, path: Path):
@@ -173,7 +200,18 @@ class ScannerStore:
             raise SnapshotError("Empty mixed scanner feed")
         current = [feed_fingerprint(card) for card in cards]
         previous = self._snapshot()
-        new_indices = new_prefix(previous, current) if previous is not None else []
+        if previous is None:
+            new_indices = []
+        else:
+            try:
+                new_indices = new_prefix(previous, current)
+            except SnapshotError as exc:
+                if "overlap" not in str(exc):
+                    raise
+                # A malformed older card can disappear from DOM extraction;
+                # preserve newest-first delivery when two old identities
+                # remain in order rather than pausing all eight scanners.
+                new_indices = _prefix_with_skipped_older_cards(previous, current)
         eligible = []
         now = datetime.now(timezone.utc).isoformat()
         for i in reversed(new_indices):
