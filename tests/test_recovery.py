@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-from sktrader.recovery import HealthMonitor, login_state, private_credentials, try_login, browser_transport_dead
+from sktrader.recovery import HealthMonitor, FeedAgeWatchdog, login_state, private_credentials, try_login, browser_transport_dead
 
 
 class RecoveryTests(unittest.TestCase):
@@ -51,6 +51,37 @@ class RecoveryTests(unittest.TestCase):
                 send.assert_called_once()
                 monitor.healthy()
                 self.assertEqual(send.call_count, 2)
+
+
+    def test_frozen_minute_age_detected_even_without_new_signals(self):
+        watcher = FeedAgeWatchdog()
+        card = "AUROUX 21 minutes ago XAUUSD 5M - SELL Point of Interest 3924.5"
+        watcher.observe([card], now=100)
+        watcher.observe([card], now=339)
+        with self.assertRaisesRegex(RuntimeError, "stopped updating"):
+            watcher.observe([card], now=340)
+        updated = card.replace("21 minutes ago", "25 minutes ago")
+        watcher.observe([updated], now=345)
+        watcher.observe([updated], now=500)
+
+    def test_age_watchdog_handles_hour_rounding_without_false_alarm(self):
+        watcher = FeedAgeWatchdog()
+        card = "AUROUX 1 hour ago XAUUSD 1H - SELL Point of Interest 3924.5"
+        watcher.observe([card], now=0)
+        watcher.observe([card], now=4000)
+        with self.assertRaisesRegex(RuntimeError, "stopped updating"):
+            watcher.observe([card], now=4200)
+        watcher.observe([card.replace("1 hour ago", "2 hours ago")], now=4201)
+
+    def test_age_watchdog_tracks_latest_card_and_rejects_missing_age(self):
+        watcher = FeedAgeWatchdog()
+        older = "AUROUX 4 minutes ago XAUUSD 5M - BUY Point of Interest 4000"
+        newer = "AUROUX just now XAUUSD 5M - SELL Point of Interest 4001"
+        watcher.observe([older], now=1)
+        watcher.observe([newer, older], now=1000)
+        watcher.observe([newer, older], now=1100)
+        with self.assertRaisesRegex(RuntimeError, "no readable relative age"):
+            watcher.observe(["AUROUX XAUUSD 5M - BUY Point of Interest 4000"], now=1101)
 
     def test_username_login_in_same_form(self):
         with tempfile.TemporaryDirectory() as directory:
