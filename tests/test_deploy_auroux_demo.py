@@ -28,6 +28,15 @@ class AurouxDemoDeploymentTests(unittest.TestCase):
         self.assertIn('[[ "$ready" == 1 ]]', source)
         self.assertIn('"trade_allowed"]=="1"', source)
 
+    def test_metaeditor_case_sensitive_wine_installation(self):
+        source = SCRIPT.read_text()
+        self.assertIn("MetaEditor64.exe", source)
+        self.assertIn("MetaEditor.exe", source)
+        self.assertIn("metaeditor64.exe", source)
+        self.assertIn("-iname 'metaeditor*.exe'", source)
+        self.assertIn('[[ -n "$editor" && -f "$editor" ]]', source)
+        self.assertIn('find "$install_dir" -maxdepth 1', source)
+
     def test_ea_fails_closed_on_wrong_account_and_heartbeats(self):
         ea = EA.read_text()
         self.assertIn('input long ExpectedDemoLogin = 5058169035;', ea)
