@@ -47,69 +47,47 @@ PY
 
 # Wine runs Windows executables from a case-sensitive Linux filesystem.
 # The official MT5 filename is commonly MetaEditor64.exe, not metaeditor64.exe.
-editor=""
-for filename in MetaEditor64.exe metaeditor64.exe MetaEditor.exe metaeditor.exe; do
-    if [[ -f "$install_dir/$filename" ]]; then
-        editor="$install_dir/$filename"
-        break
-    fi
-done
-if [[ -z "$editor" ]]; then
-    # Match case-insensitively but only inside this verified DEMO MT5
-    # installation. Never borrow a compiler from another Wine prefix.
-    while IFS= read -r -d '' candidate; do
-        base=${candidate##*/}
-        if [[ "${base,,}" == "metaeditor64.exe" || "${base,,}" == "metaeditor.exe" ]]; then
-            editor="$candidate"
-            break
-        fi
-    done < <(find "$install_dir" -maxdepth 1 -type f -iname 'metaeditor*.exe' -print0)
-fi
-[[ -n "$editor" && -f "$editor" ]] || die "MetaEditor not found in the approved DEMO installation; no files changed. Installed MT5 may be a terminal-only copy."
-echo "Using MetaEditor: $editor"
-wine_bin=$(command -v wine || command -v wine64 || true)
-[[ -n "$wine_bin" ]] || die "Wine executable unavailable"
-[[ -f "$home/.local/share/sktrader/Xauthority-155" ]] || die "Sktrader's existing virtual display authority not found"
+# Use the user's existing dedicated MetaEditor VNC 5903 container.
+# Its /workspace bind mount is isolated from all broker Wine prefixes.
+compiler_container=dkcapital-mt5-compiler-vnc
+compiler_root=/opt/dkcapital-mt5-compiler/workspace
+compiler_install="$compiler_root/MetaTrader 5"
+compiler_experts="$compiler_install/MQL5/Experts"
+compiler_editor="$compiler_install/MetaEditor64.exe"
+command -v docker >/dev/null || die "Docker not found; isolated MetaEditor unavailable"
+[[ "$(docker inspect --format '{{.State.Running}}' "$compiler_container" 2>/dev/null || true)" == true ]] \
+    || die "Existing isolated MetaEditor VNC 5903 container is not running"
+compiler_mount=$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/workspace"}}{{.Source}}{{end}}{{end}}' "$compiler_container")
+[[ "$compiler_mount" == "$compiler_root" ]] \
+    || die "Compiler /workspace mount differs from the known isolated compiler workspace"
+[[ -f "$compiler_editor" && -d "$compiler_experts" && -d "$compiler_install/MQL5/Include/Trade" ]] \
+    || die "Isolated MetaEditor64.exe or standard MQL5 headers are missing"
+[[ "$(docker exec "$compiler_container" id -u)" == 11050 ]] \
+    || die "Isolated compiler container is not running as restricted compiler UID 11050"
 
-backup=$(mktemp -d /tmp/auroux-demo-repair.XXXXXXXX)
-chmod 700 "$backup"
-cp -p "$target_mq5" "$backup/AurouxFollower.mq5"
-cp -p "$target_ex5" "$backup/AurouxFollower.ex5"
+# Every candidate is built in a unique, compiler-only directory. Other
+# DKCAPITAL/GWS compiler sources and artifacts are never touched.
+stage=$(mktemp -d "$compiler_experts/AurouxDemoCompile.XXXXXXXX")
+chown 11050:11050 "$stage"
+chmod 0700 "$stage"
+cleanup_stage() { rm -rf -- "$stage"; }
+trap cleanup_stage EXIT
+install -o 11050 -g 11050 -m 0644 "$source_mq5" "$stage/AurouxFollower.mq5"
+cmp -s "$source_mq5" "$stage/AurouxFollower.mq5" \
+    || die "Isolated compiler source differs from reviewed AUROUX source"
+stage_name=$(basename "$stage")
+win_source='Z:\workspace\MetaTrader 5\MQL5\Experts\'"$stage_name"'\AurouxFollower.mq5'
 
-completed=0
-restore_on_error() {
-    result=$?
-    if [[ $completed != 1 ]]; then
-        cp -p "$backup/AurouxFollower.mq5" "$target_mq5" || true
-        cp -p "$backup/AurouxFollower.ex5" "$target_ex5" || true
-        chown "$owner:$owner" "$target_mq5" "$target_ex5" || true
-        echo "AUROUX EA files restored from backup; existing bridge process was not restarted." >&2
-    fi
-    if [[ $result -eq 0 && $completed -eq 1 ]]; then
-        rm -rf -- "$backup"
-    else
-        echo "Backup retained at $backup" >&2
-    fi
-}
-trap restore_on_error EXIT
+echo "Compiling AUROUX with existing isolated MetaEditor VNC 5903 (no GWS or MT5 restart)..."
+timeout 120 docker exec -w '/workspace/MetaTrader 5' "$compiler_container" \
+    wine ./MetaEditor64.exe "/compile:$win_source" /log \
+    || die "Isolated MetaEditor compilation failed or timed out"
 
-echo "Installing approved demo-only AUROUX EA source..."
-install -o "$owner" -g "$owner" -m 0644 "$source_mq5" "$target_mq5"
-rm -f "$experts/AurouxFollower.log"
-win_source='C:\Program Files\MetaTrader 5\MQL5\Experts\AurouxFollower.mq5'
-
-echo "Compiling the AUROUX EA through MetaEditor, no UI interaction required..."
-timeout 120 runuser -u "$owner" -- env \
-    HOME="$home" WINEPREFIX="$prefix" DISPLAY=:155 \
-    XAUTHORITY="$home/.local/share/sktrader/Xauthority-155" \
-    WINEDEBUG=-all "$wine_bin" "$editor" "/compile:$win_source" /log \
-    || die "MetaEditor command failed or timed out"
-
-python3 - "$experts/AurouxFollower.log" <<'PY'
+python3 - "$stage/AurouxFollower.log" <<'PY'
 import pathlib,re,sys
 p=pathlib.Path(sys.argv[1])
 if not p.is_file():
-    raise SystemExit("Compilation log missing; refusing to assume successful compilation")
+    raise SystemExit("Compilation log missing from isolated MetaEditor")
 raw=p.read_bytes()
 if raw.startswith((b'\xff\xfe',b'\xfe\xff')):
     log=raw.decode("utf-16",errors="replace")
@@ -117,12 +95,52 @@ elif raw.count(b"\0")>len(raw)//8:
     log=raw.decode("utf-16-le",errors="replace")
 else:
     log=raw.decode("utf-8",errors="replace")
-print("MetaEditor compilation result:\n"+log[-1600:])
+print("Isolated MetaEditor result:\n"+log[-1600:])
 if not re.search(r'\b0\s+errors?\b',log,re.I):
-    raise SystemExit("MetaEditor did not report zero compilation errors")
+    raise SystemExit("Isolated MetaEditor did not report 0 errors")
 PY
-[[ -s "$target_ex5" && "$target_ex5" -nt "$backup/AurouxFollower.ex5" ]] \
-    || die "New compiled AurouxFollower.ex5 not produced"
+compiled="$stage/AurouxFollower.ex5"
+[[ -s "$compiled" && "$compiled" -nt "$stage/AurouxFollower.mq5" ]] \
+    || die "Isolated compiler did not produce a fresh AUROUX EX5"
+[[ "$(stat -c '%s' "$compiled")" -gt 30000 ]] \
+    || die "Compiled AUROUX EX5 is unexpectedly small; refusing installation"
+echo "Verified isolated AUROUX EX5:"
+sha256sum "$source_mq5" "$compiled"
+
+# Back up ONLY the demo AUROUX EA, preserving its exact identity and
+# terminal-global event checkpoint. Never edit/restart the GWS EA.
+backup=$(mktemp -d /tmp/auroux-demo-repair.XXXXXXXX)
+chmod 0700 "$backup"
+cp -p "$target_mq5" "$backup/AurouxFollower.mq5"
+cp -p "$target_ex5" "$backup/AurouxFollower.ex5"
+completed=0
+bridge_restarted=0
+restore_on_error() {
+    result=$?
+    if [[ $completed != 1 ]]; then
+        if [[ $bridge_restarted == 1 ]]; then
+            # After bridge cutover, reverting to a six-field EA would
+            # create a protocol mismatch. Stop bridge rather than trade.
+            systemctl stop "$service" || true
+            echo "Bridge cutover validation failed: bridge stopped; AUROUX EA not rolled back automatically." >&2
+        else
+            cp -p "$backup/AurouxFollower.mq5" "$target_mq5" || true
+            cp -p "$backup/AurouxFollower.ex5" "$target_ex5" || true
+            chown "$owner:$owner" "$target_mq5" "$target_ex5" || true
+            echo "AUROUX EA restored from backup; original bridge process kept running." >&2
+        fi
+        echo "AUROUX backup retained at $backup" >&2
+    else
+        rm -rf -- "$backup"
+    fi
+    cleanup_stage
+}
+trap restore_on_error EXIT
+
+echo "Installing freshly compiled AUROUX-only EA into verified DEMO MT5..."
+install -o "$owner" -g "$owner" -m 0644 "$source_mq5" "$target_mq5"
+install -o "$owner" -g "$owner" -m 0644 "$compiled" "$target_ex5"
+cmp -s "$compiled" "$target_ex5" || die "Installed AUROUX EA differs from isolated compilation"
 echo "Compiled EA updated. Checking that the MT5 demo terminal actually loaded it..."
 
 # Recompiling an attached EA reinitializes it. This heartbeat is written
@@ -151,6 +169,7 @@ done
 
 echo "Reconnecting seven-field MARKET signal bridge..."
 systemctl restart "$service"
+bridge_restarted=1
 sleep 3
 systemctl is-active --quiet "$service" || die "AUROUX bridge did not restart correctly"
 python3 - "$csv" <<'PY'
