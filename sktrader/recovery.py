@@ -81,6 +81,69 @@ def browser_transport_dead(exc: BaseException) -> bool:
     ))
 
 
+# Relative age must advance, even when no new signals are published.
+import re
+
+CARD_RELATIVE_AGE = re.compile(
+    r"\b(?:just\s+now|(?:(?:\d+|a|an)\s+"
+    r"(?:second|minute|hour|day|week)s?\s+ago))\b", re.I
+)
+
+
+class FeedAgeWatchdog:
+    """Detect frozen alert ages without treating quiet markets as outages."""
+
+    MAX_STATIC_SECONDS = {
+        "second": 120,
+        "minute": 240,
+        "hour": 4200,
+        "day": 93600,
+        "week": 612000,
+    }
+
+    def __init__(self):
+        self.card_identity = None
+        self.relative_age = None
+        self.last_age_change = None
+
+    @staticmethod
+    def _age(card: str) -> tuple[str, str]:
+        match = CARD_RELATIVE_AGE.search(card)
+        if not match:
+            raise RuntimeError("JIFU newest alert has no readable relative age")
+        age = " ".join(match.group(0).lower().split())
+        if age == "just now":
+            return age, "second"
+        unit = re.search(r"(second|minute|hour|day|week)s?\s+ago$", age)
+        if not unit:
+            raise RuntimeError("Invalid JIFU alert age")
+        return age, unit.group(1)
+
+    def observe(self, cards: list[str], *, now: float | None = None) -> None:
+        from sktrader.core import SnapshotError, feed_fingerprint
+
+        if not cards:
+            raise SnapshotError("Cannot check age of empty JIFU feed")
+        observed = time.monotonic() if now is None else now
+        identity = feed_fingerprint(cards[0])
+        age, unit = self._age(cards[0])
+        if identity != self.card_identity or self.last_age_change is None:
+            self.card_identity = identity
+            self.relative_age = age
+            self.last_age_change = observed
+            return
+        if age != self.relative_age:
+            self.relative_age = age
+            self.last_age_change = observed
+            return
+        if observed - self.last_age_change >= self.MAX_STATIC_SECONDS[unit]:
+            raise SnapshotError(
+                f"JIFU feed age stopped updating: newest alert still says "
+                f"'{age}' after {int(observed - self.last_age_change)} seconds; "
+                "page may be frozen"
+            )
+
+
 class HealthMonitor:
     """A distinct admin-only Discord destination; never signal channels."""
     def __init__(self, config):
