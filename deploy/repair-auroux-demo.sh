@@ -68,7 +68,15 @@ compiler_mount=$(docker inspect --format '{{range .Mounts}}{{if eq .Destination 
 stage=$(mktemp -d "$compiler_experts/AurouxDemoCompile.XXXXXXXX")
 chown 11050:11050 "$stage"
 chmod 0700 "$stage"
-cleanup_stage() { rm -rf -- "$stage"; }
+# Retain compiler output when something fails; remove after successful cutover.
+retain_stage=1
+cleanup_stage() {
+    if [[ "$retain_stage" == 0 ]]; then
+        rm -rf -- "$stage"
+    else
+        echo "Compiler diagnostic files retained: $stage" >&2
+    fi
+}
 trap cleanup_stage EXIT
 install -o 11050 -g 11050 -m 0644 "$source_mq5" "$stage/AurouxFollower.mq5"
 cmp -s "$source_mq5" "$stage/AurouxFollower.mq5" \
@@ -186,4 +194,5 @@ print("Bridge operational:",len(rows),"validated seven-field signal rows")
 print("Existing signals remain subject to their original expiry and checkpoint; no replay requested.")
 PY
 completed=1
+retain_stage=0
 echo "SUCCESS: AUROUX demo EA 1.11 and bridge are aligned and verified. GWS services unchanged."
