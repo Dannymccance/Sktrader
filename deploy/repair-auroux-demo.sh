@@ -45,8 +45,6 @@ if not 0<=age<=120:
 print("Approved broker identity: MetaQuotes-Demo GBP, login 5058169035 (DEMO)")
 PY
 
-# Wine runs Windows executables from a case-sensitive Linux filesystem.
-# The official MT5 filename is commonly MetaEditor64.exe, not metaeditor64.exe.
 # Use the user's existing dedicated MetaEditor VNC 5903 container.
 # Its /workspace bind mount is isolated from all broker Wine prefixes.
 compiler_container=dkcapital-mt5-compiler-vnc
@@ -80,7 +78,7 @@ win_source='Z:\workspace\MetaTrader 5\MQL5\Experts\'"$stage_name"'\AurouxFollowe
 
 echo "Compiling AUROUX with existing isolated MetaEditor VNC 5903 (no GWS or MT5 restart)..."
 timeout 120 docker exec -w '/workspace/MetaTrader 5' "$compiler_container" \
-    wine ./MetaEditor64.exe "/compile:$win_source" /log \
+    wine ./MetaEditor64.exe /portable "/compile:$win_source" /log \
     || die "Isolated MetaEditor compilation failed or timed out"
 
 python3 - "$stage/AurouxFollower.log" <<'PY'
