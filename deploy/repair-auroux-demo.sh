@@ -45,9 +45,28 @@ if not 0<=age<=120:
 print("Approved broker identity: MetaQuotes-Demo GBP, login 5058169035 (DEMO)")
 PY
 
-editor="$install_dir/metaeditor64.exe"
-[[ -f "$editor" ]] || editor="$install_dir/metaeditor.exe"
-[[ -f "$editor" ]] || die "MetaEditor executable not found inside expected MT5 installation"
+# Wine runs Windows executables from a case-sensitive Linux filesystem.
+# The official MT5 filename is commonly MetaEditor64.exe, not metaeditor64.exe.
+editor=""
+for filename in MetaEditor64.exe metaeditor64.exe MetaEditor.exe metaeditor.exe; do
+    if [[ -f "$install_dir/$filename" ]]; then
+        editor="$install_dir/$filename"
+        break
+    fi
+done
+if [[ -z "$editor" ]]; then
+    # Match case-insensitively but only inside this verified DEMO MT5
+    # installation. Never borrow a compiler from another Wine prefix.
+    while IFS= read -r -d '' candidate; do
+        base=${candidate##*/}
+        if [[ "${base,,}" == "metaeditor64.exe" || "${base,,}" == "metaeditor.exe" ]]; then
+            editor="$candidate"
+            break
+        fi
+    done < <(find "$install_dir" -maxdepth 1 -type f -iname 'metaeditor*.exe' -print0)
+fi
+[[ -n "$editor" && -f "$editor" ]] || die "MetaEditor not found in the approved DEMO installation; no files changed. Installed MT5 may be a terminal-only copy."
+echo "Using MetaEditor: $editor"
 wine_bin=$(command -v wine || command -v wine64 || true)
 [[ -n "$wine_bin" ]] || die "Wine executable unavailable"
 [[ -f "$home/.local/share/sktrader/Xauthority-155" ]] || die "Sktrader's existing virtual display authority not found"
