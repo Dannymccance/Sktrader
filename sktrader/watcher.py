@@ -597,13 +597,14 @@ def replay_visible(config: Config) -> None:
 def watch(config: Config) -> None:
     """Monitor all mixed JIFU Alerts; restore lost sessions without resetting dedupe."""
     from playwright.sync_api import sync_playwright
-    from sktrader.recovery import HealthMonitor, login_state, try_login, browser_transport_dead
+    from sktrader.recovery import HealthMonitor, FeedAgeWatchdog, login_state, try_login, browser_transport_dead
 
     _secure_profile(config.profile)
     _bot_token(config.bot_token_file)
     channels = _scanner_channel_map(config)
     store = ScannerStore(config.database)
     health = HealthMonitor(config)
+    feed_age = FeedAgeWatchdog()
     if health.channel and health.channel in channels.values():
         raise ValueError("JIFU health channel must not be a scanner signal channel")
     last_coverage_log = 0.0
@@ -651,6 +652,7 @@ def watch(config: Config) -> None:
                     if selector != "unselected":
                         raise SnapshotError("Mixed-scanner Alerts feed not selected")
                     cards = _read_feed_cards(page)
+                    feed_age.observe(cards)
                     try:
                         new_count, baseline = store.observe(cards)
                         gap_candidate = None
