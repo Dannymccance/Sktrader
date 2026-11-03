@@ -1,9 +1,10 @@
 // AUROUX XAUUSD follower. Standalone from GWS. Compile in MetaEditor (MT5).
 #property strict
-#property version "1.10"
+#property version "1.11"
 #include <Trade/Trade.mqh>
 CTrade trade;
 input string SignalFile = "auroux_signals.csv"; // MT5 Terminal Common/Files
+input long ExpectedDemoLogin = 5058169035; // Safety: only the approved AUROUX demo account
 input double RiskPercent = 4.0;
 input bool RoundVolumeUp = false; // Never round above the risk budget
 input ulong MagicNumber = 2601030;
@@ -13,6 +14,26 @@ input int MarketOpenBlockMinutes = 180;
 input int CheckMilliseconds = 100;
 input bool SkipHistoryOnFirstStart = true;
 string checkpoint;
+
+void WriteHealth() {
+   static datetime lastWritten=0;
+   datetime now=TimeGMT();
+   if(now>0 && lastWritten>0 && now-lastWritten<5) return;
+   lastWritten=now;
+   int f=FileOpen("auroux_follower_health.csv",FILE_WRITE|FILE_CSV|FILE_COMMON|FILE_ANSI,';');
+   if(f==INVALID_HANDLE) return;
+   bool tradingAllowed=(bool)TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)
+      && (bool)MQLInfoInteger(MQL_TRADE_ALLOWED)
+      && (bool)AccountInfoInteger(ACCOUNT_TRADE_ALLOWED)
+      && (bool)AccountInfoInteger(ACCOUNT_TRADE_EXPERT);
+   long lastId=GlobalVariableCheck(checkpoint)?(long)GlobalVariableGet(checkpoint):0;
+   FileWrite(f,"generated_at","login","mode","symbol","trade_allowed","checkpoint","build");
+   FileWrite(f,(string)(long)now,
+      (string)AccountInfoInteger(ACCOUNT_LOGIN),
+      AccountInfoInteger(ACCOUNT_TRADE_MODE)==ACCOUNT_TRADE_MODE_DEMO?"DEMO":"REAL",
+      _Symbol,tradingAllowed?"1":"0",(string)lastId,"1.11");
+   FileClose(f);
+}
 
 bool InMarketOpenBlock() {
    if(WeeklyOpenSundayUTCMinute<0 || WeeklyOpenSundayUTCMinute>=1440 || MarketOpenBlockMinutes<0) return true;
@@ -187,6 +208,13 @@ long LatestId() {
    return latest;
 }
 int OnInit() {
+   // Fail closed if this EA is attached to anything other than the approved
+   // AUROUX demo account. Never trade the separate GWS REAL account.
+   if(AccountInfoInteger(ACCOUNT_TRADE_MODE)!=ACCOUNT_TRADE_MODE_DEMO ||
+      AccountInfoInteger(ACCOUNT_LOGIN)!=ExpectedDemoLogin) {
+      Print("AUROUX refused non-demo or unexpected account");
+      return INIT_FAILED;
+   }
    checkpoint="AUROUX_"+IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))+"_"+IntegerToString((long)MagicNumber);
    if(!GlobalVariableCheck(checkpoint)) {
       int probe=FileOpen(SignalFile,FILE_READ|FILE_CSV|FILE_COMMON|FILE_ANSI,';');
@@ -198,10 +226,13 @@ int OnInit() {
       } else Print("AUROUX waiting for initial bridge file; historical signals will not replay");
    }
    EventSetMillisecondTimer(MathMax(50,CheckMilliseconds));
+   Print("AUROUX follower 1.11 initialized on demo account ",ExpectedDemoLogin);
+   WriteHealth();
    return INIT_SUCCEEDED;
 }
 void OnDeinit(const int reason) { EventKillTimer(); }
 void OnTimer() {
+   WriteHealth();
    CancelExpiredPending();
    int handle=FileOpen(SignalFile,FILE_READ|FILE_CSV|FILE_COMMON|FILE_ANSI,';');
    if(handle==INVALID_HANDLE) return;
