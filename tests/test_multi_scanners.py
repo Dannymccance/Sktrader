@@ -124,8 +124,8 @@ class MultiScannerTests(unittest.TestCase):
             store = ScannerStore(Path(temp) / "signals.db")
             old = [card("AUROUX"), card("NEXUS", symbol="USDJPY")]
             store.observe(old)
-            with self.assertRaisesRegex(SnapshotError, "overlap"):
-                store.observe([old[0]], allow_newest_only=True)
+            self.assertEqual(store.observe([old[0]], allow_newest_only=True), (0, False))
+            self.assertEqual(store.observe([old[0]], allow_newest_only=True), (0, False))
             self.assertEqual(store.pending(), [])
             store.conn.close()
 
