@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from sktrader.core import Alert, AlertError, EventStore, SnapshotError, auroux_xauusd_card, merge_history_page, parse_card
+from sktrader.core import Alert, AlertError, EventStore, SnapshotError, auroux_xauusd_card, merge_history_page, parse_card, feed_fingerprint
 
 from sktrader.multi_scanners import (
     SCANNER_CHANNELS, ScannerStore, discord_card, is_xauusd_card,
@@ -623,6 +623,9 @@ def watch(config: Config) -> None:
             last_selector = None
             last_reload = 0.0
             last_login = 0.0
+            # Require two consecutive complete, identical fingerprints before
+            # accepting that JIFU has genuinely replaced the visible feed.
+            gap_candidate = None
             while True:
                 started = time.monotonic()
                 try:
@@ -648,7 +651,30 @@ def watch(config: Config) -> None:
                     if selector != "unselected":
                         raise SnapshotError("Mixed-scanner Alerts feed not selected")
                     cards = _read_feed_cards(page)
-                    new_count, baseline = store.observe(cards)
+                    try:
+                        new_count, baseline = store.observe(cards)
+                        gap_candidate = None
+                    except SnapshotError as overlap_exc:
+                        if not any(reason in str(overlap_exc) for reason in (
+                            "without an identifiable overlap",
+                            "Insufficient overlap",
+                        )):
+                            raise
+                        fingerprints = tuple(feed_fingerprint(card) for card in cards)
+                        if gap_candidate != fingerprints:
+                            gap_candidate = fingerprints
+                            raise
+                        store.rebaseline_after_gap(cards)
+                        gap_candidate = None
+                        LOG.error(
+                            "JIFU MONITORING GAP: old feed disappeared; saved a "
+                            "new stable cursor (%s cards). Old visible cards "
+                            "were NOT replayed because their identity is uncertain. "
+                            "New signals will resume; inspect JIFU manually for "
+                            "missed signals during the outage.",
+                            len(cards),
+                        )
+                        new_count, baseline = 0, False
                     if baseline:
                         LOG.info("Mixed feed baseline: %s existing cards, %s XAUUSD cards; history not replayed",
                                  len(cards), sum(is_xauusd_card(card) for card in cards))

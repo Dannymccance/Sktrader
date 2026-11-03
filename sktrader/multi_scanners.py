@@ -246,6 +246,47 @@ class ScannerStore:
             )
         return len(eligible), False
 
+    def rebaseline_after_gap(self, cards: list[str]) -> None:
+        """Resume from a stable complete feed after its old cursor disappears.
+
+        No card in the replacement snapshot can be identified as new without
+        an overlap. Record the monitoring gap and never blindly post them.
+        The next truly new card will be queued normally.
+        """
+        if not cards:
+            raise SnapshotError("Cannot rebaseline an empty scanner feed")
+        current = [feed_fingerprint(card) for card in cards]
+        now = datetime.now(timezone.utc).isoformat()
+        with self.conn:
+            row = self.conn.execute(
+                "SELECT fingerprints FROM scanner_feed_snapshot WHERE id=1"
+            ).fetchone()
+            if row is None:
+                raise SnapshotError("Gap recovery requires a previous feed snapshot")
+            previous = json.loads(row[0])
+            # A caller must only invoke this when ordered identity is lost.
+            try:
+                new_prefix(previous, current)
+            except SnapshotError as exc:
+                if "overlap" not in str(exc):
+                    raise
+            else:
+                raise SnapshotError("Feed overlap restored; do not rebaseline")
+            self.conn.execute(
+                "CREATE TABLE IF NOT EXISTS scanner_monitoring_gaps "
+                "(id INTEGER PRIMARY KEY AUTOINCREMENT, recovered_at TEXT NOT NULL, "
+                "previous_cards INTEGER NOT NULL, replacement_cards INTEGER NOT NULL)"
+            )
+            self.conn.execute(
+                "INSERT INTO scanner_monitoring_gaps"
+                "(recovered_at, previous_cards, replacement_cards) VALUES(?,?,?)",
+                (now, len(previous), len(current)),
+            )
+            self.conn.execute(
+                "UPDATE scanner_feed_snapshot SET fingerprints=? WHERE id=1",
+                (json.dumps(current),),
+            )
+
     def coverage(self) -> dict[str, dict[str, str | None]]:
         rows = self.conn.execute(
             "SELECT scanner,last_seen_at,last_signal_at FROM scanner_coverage"

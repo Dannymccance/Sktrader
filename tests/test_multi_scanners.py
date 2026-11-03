@@ -172,6 +172,46 @@ class MultiScannerTests(unittest.TestCase):
             self.assertEqual(store.observe([card("AUROUX")] + old), (1, False))
             store.conn.close()
 
+    def test_gap_rebaseline_preserves_outbox_and_resumes_new_signals(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ScannerStore(Path(tmp) / "signals.db")
+            old = [card("WOLFX", "USDCAD"), card("HARMONICS", "BTCUSDT")]
+            self.assertEqual(store.observe(old), (0, True))
+            # Old rows are still queued if Discord was unreachable.
+            self.assertEqual(store.observe([card("NEXUS")] + old), (1, False))
+            previous_pending = len(store.pending())
+            replacement = [
+                card("AUROUX", timeframe="1H", direction="SELL",
+                     suffix="Point of Interest 3924.50000 Invalidation 3934.50000 "
+                            "Exit 1 3914.50000 Exit 2 3904.50000"),
+                card("PRIME", suffix="Point of Interest 4010 Zone S0"),
+            ]
+            with self.assertRaisesRegex(SnapshotError, "overlap"):
+                store.observe(replacement)
+            store.rebaseline_after_gap(replacement)
+            self.assertEqual(len(store.pending()), previous_pending)
+            self.assertEqual(store.observe(replacement), (0, False))
+            self.assertEqual(store.observe([card("SNIPERPRO")] + replacement), (1, False))
+            self.assertEqual(len(store.pending()), previous_pending + 1)
+            gap = store.conn.execute(
+                "SELECT previous_cards, replacement_cards "
+                "FROM scanner_monitoring_gaps"
+            ).fetchone()
+            self.assertEqual(gap, (3, 2))
+            store.conn.close()
+
+    def test_gap_rebaseline_refuses_empty_and_valid_overlap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ScannerStore(Path(tmp) / "signals.db")
+            old = [card("AUROUX"), card("PRIME")]
+            store.observe(old)
+            with self.assertRaisesRegex(SnapshotError, "empty"):
+                store.rebaseline_after_gap([])
+            with self.assertRaisesRegex(SnapshotError, "overlap restored"):
+                store.rebaseline_after_gap([card("SNIPERPRO")] + old)
+            self.assertEqual(store.observe([card("SNIPERPRO")] + old), (1, False))
+            store.conn.close()
+
     def test_replay_once_and_idempotency(self):
         with tempfile.TemporaryDirectory() as temp:
             filename = Path(temp) / "signals.db"
