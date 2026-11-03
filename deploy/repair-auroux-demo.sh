@@ -90,10 +90,26 @@ cli_prefix=/home/compiler/.wine-auroux-cli
 win_include='Z:\workspace\MetaTrader 5\MQL5'
 timeout 150 docker exec -e WINEPREFIX="$cli_prefix" "$compiler_container" wineboot -u \
     || die "Isolated AUROUX Wine compiler profile could not initialize"
-timeout 180 docker exec -e WINEPREFIX="$cli_prefix" \
+if ! timeout 180 docker exec -e WINEPREFIX="$cli_prefix" \
     -w '/workspace/MetaTrader 5' "$compiler_container" \
     wine ./MetaEditor64.exe "/compile:$win_source" "/include:$win_include" /log \
-    || die "Isolated MetaEditor command failed or timed out"
+    > "$stage/compile.stdout" 2>&1; then
+    tail -45 "$stage/compile.stdout" >&2 || true
+    die "Isolated MetaEditor command failed or timed out"
+fi
+
+# A completed Wine command may leave the compiler flushing its output.
+for ((i=0; i<12; i++)); do
+    [[ -s "$stage/AurouxFollower.log" && -s "$stage/AurouxFollower.ex5" ]] && break
+    sleep 1
+done
+if [[ ! -s "$stage/AurouxFollower.log" ]]; then
+    echo "===== Compiler output =====" >&2
+    tail -65 "$stage/compile.stdout" >&2 || true
+    echo "===== Compiler candidate files =====" >&2
+    ls -la "$stage" >&2 || true
+    die "No compilation log generated; compiler files retained for investigation"
+fi
 
 python3 - "$stage/AurouxFollower.log" <<'PY'
 import pathlib,re,sys
