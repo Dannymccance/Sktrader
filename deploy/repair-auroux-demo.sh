@@ -63,6 +63,17 @@ compiler_mount=$(docker inspect --format '{{range .Mounts}}{{if eq .Destination 
 [[ "$(docker exec "$compiler_container" id -u)" == 11050 ]] \
     || die "Isolated compiler container is not running as restricted compiler UID 11050"
 
+# MetaEditor under Wine can silently ignore /compile when Windows paths
+# contain spaces. Point to the exact same isolated installation via a
+# no-space alias. This is only a symlink in the compiler workspace.
+compiler_alias="$compiler_root/AurouxMetaEditor"
+if [[ ! -L "$compiler_alias" ]]; then
+    [[ ! -e "$compiler_alias" ]] || die "Compiler path alias exists but is not a symlink"
+    ln -s 'MetaTrader 5' "$compiler_alias"
+fi
+[[ "$(readlink "$compiler_alias")" == 'MetaTrader 5' ]] \
+    || die "Compiler path alias does not point to the approved isolated installation"
+
 # Every candidate is built in a unique, compiler-only directory. Other
 # DKCAPITAL/GWS compiler sources and artifacts are never touched.
 stage=$(mktemp -d "$compiler_experts/AurouxDemoCompile.XXXXXXXX")
@@ -82,16 +93,26 @@ install -o 11050 -g 11050 -m 0644 "$source_mq5" "$stage/AurouxFollower.mq5"
 cmp -s "$source_mq5" "$stage/AurouxFollower.mq5" \
     || die "Isolated compiler source differs from reviewed AUROUX source"
 stage_name=$(basename "$stage")
-win_source='Z:\workspace\MetaTrader 5\MQL5\Experts\'"$stage_name"'\AurouxFollower.mq5'
+win_source='Z:\workspace\AurouxMetaEditor\MQL5\Experts\'"$stage_name"'\AurouxFollower.mq5'
 
 echo "Compiling AUROUX with separate command-line Wine profile inside the isolated container..."
 # Avoid forwarding /compile to the existing MetaEditor GUI session.
 cli_prefix=/home/compiler/.wine-auroux-cli
-win_include='Z:\workspace\MetaTrader 5\MQL5'
+win_include='Z:\workspace\AurouxMetaEditor\MQL5'
 timeout 150 docker exec -e WINEPREFIX="$cli_prefix" "$compiler_container" wineboot -u \
     || die "Isolated AUROUX Wine compiler profile could not initialize"
+
+# Check that Wine resolves the exact candidate source, not just a valid-looking path.
+win_source_unix=$(timeout 20 docker exec -e WINEPREFIX="$cli_prefix" \
+    "$compiler_container" winepath -u "$win_source" | tr -d '\r') \
+    || die "Wine could not translate the isolated AUROUX source path"
+[[ -n "$win_source_unix" ]] || die "Wine returned an empty source path"
+docker exec "$compiler_container" test -s "$win_source_unix" \
+    || die "Wine's translated AUROUX source path does not exist: $win_source_unix"
+echo "Wine resolved isolated compiler source: $win_source_unix"
+
 if ! timeout 180 docker exec -e WINEPREFIX="$cli_prefix" \
-    -w '/workspace/MetaTrader 5' "$compiler_container" \
+    -w '/workspace/AurouxMetaEditor' "$compiler_container" \
     wine ./MetaEditor64.exe "/compile:$win_source" "/include:$win_include" /log \
     > "$stage/compile.stdout" 2>&1; then
     tail -45 "$stage/compile.stdout" >&2 || true
