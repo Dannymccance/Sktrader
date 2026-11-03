@@ -668,7 +668,7 @@ def watch(config: Config) -> None:
                     cards = _read_feed_cards(page)
                     feed_age.observe(cards)
                     try:
-                        new_count, baseline = store.observe(cards)
+                        new_count, baseline = store.observe(cards, allow_newest_only=True)
                         gap_candidate = None
                     except SnapshotError as overlap_exc:
                         if not any(reason in str(overlap_exc) for reason in (
