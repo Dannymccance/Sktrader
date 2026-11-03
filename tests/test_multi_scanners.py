@@ -28,6 +28,107 @@ class MultiScannerTests(unittest.TestCase):
         self.assertNotIn(r"Point of Interest\\s*[0-9]", EXTRACT_CARDS_JS)
         self.assertIn("BUY|SELL", EXTRACT_CARDS_JS)
 
+    def test_partial_dom_extraction_accepts_newest_and_skips_older(self):
+        from sktrader.watcher import _read_feed_cards, EXTRACT_CARDS_JS, DIAG_JS
+
+        newest = card("AUROUX")
+        older = card("NEXUS", symbol="USDJPY")
+
+        class Page:
+            def __init__(self, slots):
+                self.slots = slots
+
+            def evaluate(self, script):
+                if script == EXTRACT_CARDS_JS:
+                    return self.slots
+                if script == DIAG_JS:
+                    return {"poi_labels": 3}
+                raise AssertionError("Unexpected script")
+
+        self.assertIn("cards.push(captured)", EXTRACT_CARDS_JS)
+        self.assertEqual(_read_feed_cards(Page([newest, None, older])), [newest, older])
+        with self.assertRaisesRegex(SnapshotError, "Newest visible JIFU alert"):
+            _read_feed_cards(Page([None, newest, older]))
+        with self.assertRaisesRegex(SnapshotError, "Newest visible JIFU alert"):
+            _read_feed_cards(Page([]))
+
+    def test_missing_older_card_does_not_block_newest_signal(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = ScannerStore(Path(temp) / "signals.db")
+            old = [
+                card("NEXUS", symbol="USDJPY"),
+                card("WOLF X", symbol="EURJPY"),
+                card("PRIME", symbol="XAGUSD"),
+                card("HARMONICS", symbol="BTCUSDT"),
+            ]
+            self.assertEqual(store.observe(old), (0, True))
+
+            # The older WOLF X card fails DOM extraction, but AUROUX
+            # has appeared at the top and two older cards still match.
+            partial = [card("AUROUX"), old[0], old[2], old[3]]
+            self.assertEqual(store.observe(partial), (1, False))
+            self.assertEqual(store.pending()[0][1].scanner, "AUROUX")
+            self.assertEqual(store.observe(partial), (0, False))
+            self.assertEqual(len(store.pending()), 1)
+            store.conn.close()
+
+    def test_missing_older_card_does_not_create_false_new_event(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = ScannerStore(Path(temp) / "signals.db")
+            old = [
+                card("AUROUX"), card("NEXUS", symbol="USDJPY"),
+                card("WOLFX", symbol="EURJPY"),
+                card("PRIME", symbol="XAGUSD"),
+            ]
+            self.assertEqual(store.observe(old), (0, True))
+            self.assertEqual(store.observe([old[0], old[2], old[3]]), (0, False))
+            self.assertEqual(store.pending(), [])
+            store.conn.close()
+
+    def test_partial_feed_with_one_old_match_still_fails_closed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = ScannerStore(Path(temp) / "signals.db")
+            old = [card("NEXUS", symbol="USDJPY"), card("PRIME", symbol="XAGUSD")]
+            store.observe(old)
+            with self.assertRaisesRegex(SnapshotError, "overlap"):
+                store.observe([card("AUROUX"), old[0]])
+            self.assertEqual(store.pending(), [])
+            store.conn.close()
+
+    def test_live_newest_only_fallback_queues_once_and_records_gap(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = ScannerStore(Path(temp) / "signals.db")
+            old = [
+                card("PRIME", symbol="USDJPY"),
+                card("NEXUS", symbol="EURJPY"),
+                card("WOLFX", symbol="XAGUSD"),
+            ]
+            store.observe(old)
+            newest = card("AUROUX", age="just now")
+
+            # Ordinary callers retain strict overlap protection.
+            with self.assertRaisesRegex(SnapshotError, "overlap"):
+                store.observe([newest])
+            # The live watch loop has verified an unfiltered JIFU sidebar:
+            # accept only its latest card without inventing older history.
+            self.assertEqual(store.observe([newest], allow_newest_only=True), (1, False))
+            self.assertEqual(store.observe([newest], allow_newest_only=True), (0, False))
+            self.assertEqual(len(store.pending()), 1)
+            self.assertEqual(
+                store.conn.execute("SELECT COUNT(*) FROM scanner_monitoring_gaps").fetchone()[0], 1
+            )
+            store.conn.close()
+
+    def test_newest_only_does_not_repost_previously_seen_card(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = ScannerStore(Path(temp) / "signals.db")
+            old = [card("AUROUX"), card("NEXUS", symbol="USDJPY")]
+            store.observe(old)
+            self.assertEqual(store.observe([old[0]], allow_newest_only=True), (0, False))
+            self.assertEqual(store.observe([old[0]], allow_newest_only=True), (0, False))
+            self.assertEqual(store.pending(), [])
+            store.conn.close()
+
     def test_all_eight_sources_and_aliases(self):
         cases = {
             "QUANTUM": "QUANTUM",

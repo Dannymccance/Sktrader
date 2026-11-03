@@ -570,17 +570,16 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         self.assertEqual(_read_alerts(Page())[0].poi, "4025.50000")
 
 
-    def test_incomplete_list_refuses_baseline(self):
+    def test_only_newest_alert_is_needed_even_when_ten_labels_visible(self):
         class Page:
             def evaluate(self, script):
                 if script == EXTRACT_CARDS_JS:
-                    return [BUY]
+                    return [BUY] + [None] * 9
                 if script == DIAG_JS:
                     return {"poi_labels": 10}
                 raise AssertionError("Unexpected script")
 
-        with self.assertRaisesRegex(SnapshotError, "1 cards versus 10 visible labels"):
-            _read_alerts(Page())
+        self.assertEqual(_read_alerts(Page())[0].poi, "4025.50000")
 
 
 class OnlySignalMessagesTests(unittest.TestCase):

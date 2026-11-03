@@ -82,6 +82,8 @@ EXTRACT_CARDS_JS = r"""() => {
       r.left < window.innerWidth && r.right <= window.innerWidth + 25;
   };
   const tree = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  // Keep one slot per visible POI label. A missing older card must not
+  // hide a newly published card, but a missing newest card must fail closed.
   const cards = [];
   const seen = new Set();
   let node;
@@ -89,6 +91,7 @@ EXTRACT_CARDS_JS = r"""() => {
     if ((node.nodeValue || '').trim().toLowerCase() !== 'point of interest') continue;
     let el = node.parentElement;
     if (!el || !isSidebar(el)) continue;
+    let captured = null;
     for (let depth = 0; depth < 22 && el; depth++, el = el.parentElement) {
       const text = (el.innerText || '').trim();
       if (text.length > 4500) break;
@@ -103,12 +106,13 @@ EXTRACT_CARDS_JS = r"""() => {
       // scanner parser still validates newly captured XAUUSD messages.
       if (/\b(?:1M|5M|15M|30M|1H|4H)\s*-\s*(?:BUY|SELL)\b/i.test(text)) {
         if (!seen.has(el)) {
-          cards.push(text);
+          captured = text;
           seen.add(el);
         }
         break;
       }
     }
+    cards.push(captured);
   }
   return cards;
 }"""
@@ -326,17 +330,22 @@ def _prepare_page(page) -> None:
 
 
 def _read_feed_cards(page) -> list[str]:
-    """Read complete single-card DOM segments across all JIFU scanners."""
-    raw_cards: list[str] = page.evaluate(EXTRACT_CARDS_JS)
-    status = page.evaluate(DIAG_JS)
-    if not raw_cards or len(raw_cards) != status["poi_labels"]:
-        # A partial feed cannot be used for overlap/dedup or baselining.
+    """Read the newest card and any other extractable mixed-feed cards.
+
+    JIFU sometimes renders an older card without a supported direction.
+    Preserve its empty position in the DOM extraction so we can distinguish
+    an older skipped card from the newest card going missing. Never move the
+    cursor when the newest visible POI cannot be captured.
+    """
+    slots: list[str | None] = page.evaluate(EXTRACT_CARDS_JS)
+    if not slots or not slots[0]:
+        status = page.evaluate(DIAG_JS)
         raise SnapshotError(
-            f"Incomplete mixed JIFU feed: {len(raw_cards)} cards versus "
-            f"{status['poi_labels']} visible labels; browser diagnostic: "
+            "Newest visible JIFU alert cannot be extracted; "
+            "preserving the last snapshot; browser diagnostic: "
             + json.dumps(status, sort_keys=True)
         )
-    return raw_cards
+    return [card for card in slots if card]
 
 
 def _read_alerts(page) -> list[Alert]:
@@ -499,7 +508,7 @@ def diagnose(config: Config) -> None:
             except SnapshotError as exc:
                 print("Feed capture: NOT READY.", exc)
             else:
-                visible = page.evaluate(EXTRACT_CARDS_JS)
+                visible = _read_feed_cards(page)
                 gold_count = sum(is_xauusd_card(card) for card in visible)
                 print(f"Feed capture: READY; {status['poi_labels']} mixed-scanner cards; "
                       f"{gold_count} XAUUSD cards across all scanners; "
@@ -659,7 +668,7 @@ def watch(config: Config) -> None:
                     cards = _read_feed_cards(page)
                     feed_age.observe(cards)
                     try:
-                        new_count, baseline = store.observe(cards)
+                        new_count, baseline = store.observe(cards, allow_newest_only=True)
                         gap_candidate = None
                     except SnapshotError as overlap_exc:
                         if not any(reason in str(overlap_exc) for reason in (

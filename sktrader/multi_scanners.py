@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -10,6 +11,8 @@ from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from sktrader.core import AlertError, SnapshotError, feed_fingerprint, new_prefix
+
+LOG = logging.getLogger("sktrader")
 
 SCANNER_CHANNELS = {
     "QUANTUM": "xauusd-quantum",
@@ -137,6 +140,33 @@ def discord_card(signal: ScannerSignal, *, observed_at: str | None = None) -> di
     }
 
 
+def _prefix_with_skipped_older_cards(previous: list[str], current: list[str]) -> list[int]:
+    """Recover new top-of-feed cards when an older DOM card was skipped.
+
+    Require the previous newest card AND at least one more old card in the
+    same relative order. One matching price/identity alone is insufficient.
+    Never infer cards that are absent from the current JIFU DOM.
+    """
+    candidates = []
+    for offset, fingerprint in enumerate(current):
+        if fingerprint != previous[0]:
+            continue
+        old_index = 1
+        matches = 1
+        for value in current[offset + 1:]:
+            while old_index < len(previous) and previous[old_index] != value:
+                old_index += 1
+            if old_index == len(previous):
+                break
+            matches += 1
+            old_index += 1
+        if matches >= 2:
+            candidates.append(offset)
+    if len(candidates) != 1:
+        raise SnapshotError("Insufficient or ambiguous ordered overlap in partial JIFU feed")
+    return list(range(candidates[0]))
+
+
 class ScannerStore:
     """Separate XAUUSD mixed-feed state from prior Auroux-only SQLite history."""
     def __init__(self, path: Path):
@@ -168,12 +198,40 @@ class ScannerStore:
         ).fetchone()
         return json.loads(row[0]) if row else None
 
-    def observe(self, cards: list[str]) -> tuple[int, bool]:
+    def observe(self, cards: list[str], *, allow_newest_only: bool = False) -> tuple[int, bool]:
         if not cards:
             raise SnapshotError("Empty mixed scanner feed")
         current = [feed_fingerprint(card) for card in cards]
         previous = self._snapshot()
-        new_indices = new_prefix(previous, current) if previous is not None else []
+        newest_only_gap = False
+        if previous is None:
+            new_indices = []
+        else:
+            try:
+                new_indices = new_prefix(previous, current)
+            except SnapshotError as exc:
+                if "overlap" not in str(exc):
+                    raise
+                # Prefer two ordered old identities when an older card was
+                # skipped during extraction. If none can be reconciled, still
+                # capture the latest card once, but never guess older signals.
+                try:
+                    new_indices = _prefix_with_skipped_older_cards(previous, current)
+                except SnapshotError:
+                    if not allow_newest_only:
+                        raise
+                    if current[0] == previous[0]:
+                        # The same newest card is still present. Older cards
+                        # may be missing, but there is nothing new to post.
+                        new_indices = []
+                    elif current[0] in previous:
+                        # A card moving to the top is not proof of a new event.
+                        raise
+                    else:
+                        # No safe historical overlap remains; accept only the
+                        # unseen newest card and record the monitoring gap.
+                        new_indices = [0]
+                        newest_only_gap = True
         eligible = []
         now = datetime.now(timezone.utc).isoformat()
         for i in reversed(new_indices):
@@ -207,10 +265,29 @@ class ScannerStore:
                     "INSERT INTO scanner_events(observed_at,payload) VALUES(?,?)",
                     (now, json.dumps(asdict(signal), sort_keys=True)),
                 )
+            if newest_only_gap:
+                # Preserve a durable audit record: any unseen older alerts
+                # are uncertain, and we have intentionally queued only the
+                # newest identifiable card.
+                self.conn.execute(
+                    "CREATE TABLE IF NOT EXISTS scanner_monitoring_gaps "
+                    "(id INTEGER PRIMARY KEY AUTOINCREMENT, recovered_at TEXT NOT NULL, "
+                    "previous_cards INTEGER NOT NULL, replacement_cards INTEGER NOT NULL)"
+                )
+                self.conn.execute(
+                    "INSERT INTO scanner_monitoring_gaps "
+                    "(recovered_at, previous_cards, replacement_cards) VALUES(?,?,?)",
+                    (now, len(previous), len(current)),
+                )
             self.conn.execute(
                 "INSERT INTO scanner_feed_snapshot(id,fingerprints) VALUES(1,?) "
                 "ON CONFLICT(id) DO UPDATE SET fingerprints=excluded.fingerprints",
                 (json.dumps(current),),
+            )
+        if newest_only_gap:
+            LOG.warning(
+                "JIFU MONITORING GAP: latest alert captured without historical "
+                "overlap; only newest card processed, older signals may be missed"
             )
         return len(eligible), previous is None
 
