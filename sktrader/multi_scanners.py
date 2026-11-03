@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -10,6 +11,8 @@ from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from sktrader.core import AlertError, SnapshotError, feed_fingerprint, new_prefix
+
+LOG = logging.getLogger("sktrader")
 
 SCANNER_CHANNELS = {
     "QUANTUM": "xauusd-quantum",
@@ -200,6 +203,7 @@ class ScannerStore:
             raise SnapshotError("Empty mixed scanner feed")
         current = [feed_fingerprint(card) for card in cards]
         previous = self._snapshot()
+        newest_only_gap = False
         if previous is None:
             new_indices = []
         else:
@@ -208,10 +212,18 @@ class ScannerStore:
             except SnapshotError as exc:
                 if "overlap" not in str(exc):
                     raise
-                # A malformed older card can disappear from DOM extraction;
-                # preserve newest-first delivery when two old identities
-                # remain in order rather than pausing all eight scanners.
-                new_indices = _prefix_with_skipped_older_cards(previous, current)
+                # Prefer two ordered old identities when an older card was
+                # skipped during extraction. If none can be reconciled, still
+                # capture the latest card once, but never guess older signals.
+                try:
+                    new_indices = _prefix_with_skipped_older_cards(previous, current)
+                except SnapshotError:
+                    if current[0] in previous:
+                        # An already-seen top card is not sufficient evidence
+                        # of a new signal. Preserve cursor for gap recovery.
+                        raise
+                    new_indices = [0]
+                    newest_only_gap = True
         eligible = []
         now = datetime.now(timezone.utc).isoformat()
         for i in reversed(new_indices):
@@ -245,10 +257,29 @@ class ScannerStore:
                     "INSERT INTO scanner_events(observed_at,payload) VALUES(?,?)",
                     (now, json.dumps(asdict(signal), sort_keys=True)),
                 )
+            if newest_only_gap:
+                # Preserve a durable audit record: any unseen older alerts
+                # are uncertain, and we have intentionally queued only the
+                # newest identifiable card.
+                self.conn.execute(
+                    "CREATE TABLE IF NOT EXISTS scanner_monitoring_gaps "
+                    "(id INTEGER PRIMARY KEY AUTOINCREMENT, recovered_at TEXT NOT NULL, "
+                    "previous_cards INTEGER NOT NULL, replacement_cards INTEGER NOT NULL)"
+                )
+                self.conn.execute(
+                    "INSERT INTO scanner_monitoring_gaps "
+                    "(recovered_at, previous_cards, replacement_cards) VALUES(?,?,?)",
+                    (now, len(previous), len(current)),
+                )
             self.conn.execute(
                 "INSERT INTO scanner_feed_snapshot(id,fingerprints) VALUES(1,?) "
                 "ON CONFLICT(id) DO UPDATE SET fingerprints=excluded.fingerprints",
                 (json.dumps(current),),
+            )
+        if newest_only_gap:
+            LOG.warning(
+                "JIFU MONITORING GAP: latest alert captured without historical "
+                "overlap; only newest card processed, older signals may be missed"
             )
         return len(eligible), previous is None
 
