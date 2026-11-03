@@ -218,13 +218,20 @@ class ScannerStore:
                 try:
                     new_indices = _prefix_with_skipped_older_cards(previous, current)
                 except SnapshotError:
-                    if not allow_newest_only or current[0] in previous:
-                        # Only the active, confirmed unfiltered watch loop may
-                        # choose newest-only recovery. Ordinary callers and
-                        # already-seen latest cards preserve the old gap guard.
+                    if not allow_newest_only:
                         raise
-                    new_indices = [0]
-                    newest_only_gap = True
+                    if current[0] == previous[0]:
+                        # The same newest card is still present. Older cards
+                        # may be missing, but there is nothing new to post.
+                        new_indices = []
+                    elif current[0] in previous:
+                        # A card moving to the top is not proof of a new event.
+                        raise
+                    else:
+                        # No safe historical overlap remains; accept only the
+                        # unseen newest card and record the monitoring gap.
+                        new_indices = [0]
+                        newest_only_gap = True
         eligible = []
         now = datetime.now(timezone.utc).isoformat()
         for i in reversed(new_indices):
