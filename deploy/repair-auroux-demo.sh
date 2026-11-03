@@ -76,10 +76,16 @@ cmp -s "$source_mq5" "$stage/AurouxFollower.mq5" \
 stage_name=$(basename "$stage")
 win_source='Z:\workspace\MetaTrader 5\MQL5\Experts\'"$stage_name"'\AurouxFollower.mq5'
 
-echo "Compiling AUROUX with existing isolated MetaEditor VNC 5903 (no GWS or MT5 restart)..."
-timeout 120 docker exec -w '/workspace/MetaTrader 5' "$compiler_container" \
-    wine ./MetaEditor64.exe /portable "/compile:$win_source" /log \
-    || die "Isolated MetaEditor compilation failed or timed out"
+echo "Compiling AUROUX with separate command-line Wine profile inside the isolated container..."
+# Avoid forwarding /compile to the existing MetaEditor GUI session.
+cli_prefix=/home/compiler/.wine-auroux-cli
+win_include='Z:\workspace\MetaTrader 5\MQL5'
+timeout 150 docker exec -e WINEPREFIX="$cli_prefix" "$compiler_container" wineboot -u \
+    || die "Isolated AUROUX Wine compiler profile could not initialize"
+timeout 180 docker exec -e WINEPREFIX="$cli_prefix" \
+    -w '/workspace/MetaTrader 5' "$compiler_container" \
+    wine ./MetaEditor64.exe "/compile:$win_source" "/include:$win_include" /log \
+    || die "Isolated MetaEditor command failed or timed out"
 
 python3 - "$stage/AurouxFollower.log" <<'PY'
 import pathlib,re,sys
