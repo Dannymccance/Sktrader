@@ -20,6 +20,14 @@ def card(scanner, symbol="XAUUSD", age="2 minutes ago", timeframe="5M",
 
 
 class MultiScannerTests(unittest.TestCase):
+    def test_dom_capture_does_not_require_numeric_poi_for_mixed_feed(self):
+        # A non-XAUUSD scanner may use a zone instead of a numeric POI.
+        # Excluding it breaks ordered overlap for every other scanner.
+        from sktrader.watcher import EXTRACT_CARDS_JS
+        self.assertIn("Point of Interest", EXTRACT_CARDS_JS)
+        self.assertNotIn(r"Point of Interest\\s*[0-9]", EXTRACT_CARDS_JS)
+        self.assertIn("BUY|SELL", EXTRACT_CARDS_JS)
+
     def test_all_eight_sources_and_aliases(self):
         cases = {
             "QUANTUM": "QUANTUM",
