@@ -607,6 +607,8 @@ def watch(config: Config) -> None:
     feed_age = FeedAgeWatchdog()
     if health.channel and health.channel in channels.values():
         raise ValueError("JIFU health channel must not be a scanner signal channel")
+    if not health.channel:
+        LOG.warning("SKTRADER_HEALTH_CHANNEL_ID unset: feed-stall alerts will appear in service logs only, not Discord")
     last_coverage_log = 0.0
     login_file_raw = os.getenv("SKTRADER_JIFU_CREDENTIALS_FILE", "").strip()
     login_file = Path(login_file_raw) if login_file_raw else None
