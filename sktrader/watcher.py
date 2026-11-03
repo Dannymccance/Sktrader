@@ -97,8 +97,11 @@ EXTRACT_CARDS_JS = r"""() => {
       if (fields !== 1) continue;
       // This is the MIXED JIFU Alerts feed, not an Auroux-only feed.
       // Other scanners may have fewer exits or no invalidation.
-      if (/\b(?:1M|5M|15M|30M|1H|4H)\s*-\s*(?:BUY|SELL)\b/i.test(text) &&
-          /Point of Interest\s*[0-9]/i.test(text)) {
+      // The POI label is already identified above. Do not require the
+      // following value to start with a digit: JIFU can render zones, signs,
+      // spacing and formatted values differently across scanners. The
+      // scanner parser still validates newly captured XAUUSD messages.
+      if (/\b(?:1M|5M|15M|30M|1H|4H)\s*-\s*(?:BUY|SELL)\b/i.test(text)) {
         if (!seen.has(el)) {
           cards.push(text);
           seen.add(el);
