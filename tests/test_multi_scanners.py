@@ -24,7 +24,7 @@ class MultiScannerTests(unittest.TestCase):
         # A non-XAUUSD scanner may use a zone instead of a numeric POI.
         # Excluding it breaks ordered overlap for every other scanner.
         from sktrader.watcher import EXTRACT_CARDS_JS
-        self.assertIn("Point of Interest", EXTRACT_CARDS_JS)
+        self.assertIn("point of interest", EXTRACT_CARDS_JS)
         self.assertNotIn(r"Point of Interest\\s*[0-9]", EXTRACT_CARDS_JS)
         self.assertIn("BUY|SELL", EXTRACT_CARDS_JS)
 
