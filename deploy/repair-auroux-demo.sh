@@ -68,7 +68,15 @@ compiler_mount=$(docker inspect --format '{{range .Mounts}}{{if eq .Destination 
 stage=$(mktemp -d "$compiler_experts/AurouxDemoCompile.XXXXXXXX")
 chown 11050:11050 "$stage"
 chmod 0700 "$stage"
-cleanup_stage() { rm -rf -- "$stage"; }
+# Retain compiler output when something fails; remove after successful cutover.
+retain_stage=1
+cleanup_stage() {
+    if [[ "$retain_stage" == 0 ]]; then
+        rm -rf -- "$stage"
+    else
+        echo "Compiler diagnostic files retained: $stage" >&2
+    fi
+}
 trap cleanup_stage EXIT
 install -o 11050 -g 11050 -m 0644 "$source_mq5" "$stage/AurouxFollower.mq5"
 cmp -s "$source_mq5" "$stage/AurouxFollower.mq5" \
@@ -76,10 +84,32 @@ cmp -s "$source_mq5" "$stage/AurouxFollower.mq5" \
 stage_name=$(basename "$stage")
 win_source='Z:\workspace\MetaTrader 5\MQL5\Experts\'"$stage_name"'\AurouxFollower.mq5'
 
-echo "Compiling AUROUX with existing isolated MetaEditor VNC 5903 (no GWS or MT5 restart)..."
-timeout 120 docker exec -w '/workspace/MetaTrader 5' "$compiler_container" \
-    wine ./MetaEditor64.exe /portable "/compile:$win_source" /log \
-    || die "Isolated MetaEditor compilation failed or timed out"
+echo "Compiling AUROUX with separate command-line Wine profile inside the isolated container..."
+# Avoid forwarding /compile to the existing MetaEditor GUI session.
+cli_prefix=/home/compiler/.wine-auroux-cli
+win_include='Z:\workspace\MetaTrader 5\MQL5'
+timeout 150 docker exec -e WINEPREFIX="$cli_prefix" "$compiler_container" wineboot -u \
+    || die "Isolated AUROUX Wine compiler profile could not initialize"
+if ! timeout 180 docker exec -e WINEPREFIX="$cli_prefix" \
+    -w '/workspace/MetaTrader 5' "$compiler_container" \
+    wine ./MetaEditor64.exe "/compile:$win_source" "/include:$win_include" /log \
+    > "$stage/compile.stdout" 2>&1; then
+    tail -45 "$stage/compile.stdout" >&2 || true
+    die "Isolated MetaEditor command failed or timed out"
+fi
+
+# A completed Wine command may leave the compiler flushing its output.
+for ((i=0; i<12; i++)); do
+    [[ -s "$stage/AurouxFollower.log" && -s "$stage/AurouxFollower.ex5" ]] && break
+    sleep 1
+done
+if [[ ! -s "$stage/AurouxFollower.log" ]]; then
+    echo "===== Compiler output =====" >&2
+    tail -65 "$stage/compile.stdout" >&2 || true
+    echo "===== Compiler candidate files =====" >&2
+    ls -la "$stage" >&2 || true
+    die "No compilation log generated; compiler files retained for investigation"
+fi
 
 python3 - "$stage/AurouxFollower.log" <<'PY'
 import pathlib,re,sys
@@ -180,4 +210,5 @@ print("Bridge operational:",len(rows),"validated seven-field signal rows")
 print("Existing signals remain subject to their original expiry and checkpoint; no replay requested.")
 PY
 completed=1
+retain_stage=0
 echo "SUCCESS: AUROUX demo EA 1.11 and bridge are aligned and verified. GWS services unchanged."
