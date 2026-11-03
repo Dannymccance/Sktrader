@@ -95,6 +95,40 @@ class MultiScannerTests(unittest.TestCase):
             self.assertEqual(store.pending(), [])
             store.conn.close()
 
+    def test_live_newest_only_fallback_queues_once_and_records_gap(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = ScannerStore(Path(temp) / "signals.db")
+            old = [
+                card("PRIME", symbol="USDJPY"),
+                card("NEXUS", symbol="EURJPY"),
+                card("WOLFX", symbol="XAGUSD"),
+            ]
+            store.observe(old)
+            newest = card("AUROUX", age="just now")
+
+            # Ordinary callers retain strict overlap protection.
+            with self.assertRaisesRegex(SnapshotError, "overlap"):
+                store.observe([newest])
+            # The live watch loop has verified an unfiltered JIFU sidebar:
+            # accept only its latest card without inventing older history.
+            self.assertEqual(store.observe([newest], allow_newest_only=True), (1, False))
+            self.assertEqual(store.observe([newest], allow_newest_only=True), (0, False))
+            self.assertEqual(len(store.pending()), 1)
+            self.assertEqual(
+                store.conn.execute("SELECT COUNT(*) FROM scanner_monitoring_gaps").fetchone()[0], 1
+            )
+            store.conn.close()
+
+    def test_newest_only_does_not_repost_previously_seen_card(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = ScannerStore(Path(temp) / "signals.db")
+            old = [card("AUROUX"), card("NEXUS", symbol="USDJPY")]
+            store.observe(old)
+            with self.assertRaisesRegex(SnapshotError, "overlap"):
+                store.observe([old[0]], allow_newest_only=True)
+            self.assertEqual(store.pending(), [])
+            store.conn.close()
+
     def test_all_eight_sources_and_aliases(self):
         cases = {
             "QUANTUM": "QUANTUM",
