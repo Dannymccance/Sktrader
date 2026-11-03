@@ -34,7 +34,7 @@ class AurouxDemoDeploymentTests(unittest.TestCase):
         self.assertIn("/opt/dkcapital-mt5-compiler/workspace", source)
         self.assertIn("MetaEditor64.exe", source)
         self.assertIn("docker exec -w '/workspace/MetaTrader 5'", source)
-        self.assertIn('"/compile:$win_source" /log', source)
+        self.assertIn('wine ./MetaEditor64.exe /portable "/compile:$win_source" /log', source)
         self.assertIn("compiler_mount", source)
         self.assertIn('"$compiler_mount" == "$compiler_root"', source)
         self.assertIn('[[ "$(docker exec "$compiler_container" id -u)" == 11050 ]]', source)
