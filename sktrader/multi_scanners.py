@@ -198,7 +198,7 @@ class ScannerStore:
         ).fetchone()
         return json.loads(row[0]) if row else None
 
-    def observe(self, cards: list[str]) -> tuple[int, bool]:
+    def observe(self, cards: list[str], *, allow_newest_only: bool = False) -> tuple[int, bool]:
         if not cards:
             raise SnapshotError("Empty mixed scanner feed")
         current = [feed_fingerprint(card) for card in cards]
@@ -218,9 +218,10 @@ class ScannerStore:
                 try:
                     new_indices = _prefix_with_skipped_older_cards(previous, current)
                 except SnapshotError:
-                    if current[0] in previous:
-                        # An already-seen top card is not sufficient evidence
-                        # of a new signal. Preserve cursor for gap recovery.
+                    if not allow_newest_only or current[0] in previous:
+                        # Only the active, confirmed unfiltered watch loop may
+                        # choose newest-only recovery. Ordinary callers and
+                        # already-seen latest cards preserve the old gap guard.
                         raise
                     new_indices = [0]
                     newest_only_gap = True
