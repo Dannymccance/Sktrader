@@ -28,14 +28,29 @@ class AurouxDemoDeploymentTests(unittest.TestCase):
         self.assertIn('[[ "$ready" == 1 ]]', source)
         self.assertIn('"trade_allowed"]=="1"', source)
 
-    def test_metaeditor_case_sensitive_wine_installation(self):
+    def test_isolated_vnc_5903_compiler_only(self):
         source = SCRIPT.read_text()
+        self.assertIn("dkcapital-mt5-compiler-vnc", source)
+        self.assertIn("/opt/dkcapital-mt5-compiler/workspace", source)
         self.assertIn("MetaEditor64.exe", source)
-        self.assertIn("MetaEditor.exe", source)
-        self.assertIn("metaeditor64.exe", source)
-        self.assertIn("-iname 'metaeditor*.exe'", source)
-        self.assertIn('[[ -n "$editor" && -f "$editor" ]]', source)
-        self.assertIn('find "$install_dir" -maxdepth 1', source)
+        self.assertIn("docker exec -w '/workspace/MetaTrader 5'", source)
+        self.assertIn('wine ./MetaEditor64.exe /portable "/compile:$win_source" /log', source)
+        self.assertIn("compiler_mount", source)
+        self.assertIn('"$compiler_mount" == "$compiler_root"', source)
+        self.assertIn('[[ "$(docker exec "$compiler_container" id -u)" == 11050 ]]', source)
+        self.assertIn("AurouxDemoCompile.", source)
+        self.assertIn('cmp -s "$compiled" "$target_ex5"', source)
+        self.assertNotIn('wine_bin=', source)
+        self.assertNotIn('WINEPREFIX="$prefix"', source)
+        self.assertNotIn('DISPLAY=:155', source)
+
+    def test_missing_runtime_heartbeat_leaves_bridge_unchanged(self):
+        source = SCRIPT.read_text()
+        self.assertIn('[[ "$ready" == 1 ]] || die', source)
+        self.assertLess(source.index('[[ "$ready" == 1 ]] || die'),
+                        source.index('systemctl restart "$service"'))
+        self.assertIn('bridge_restarted=1', source)
+        self.assertIn('systemctl stop "$service" || true', source)
 
     def test_ea_fails_closed_on_wrong_account_and_heartbeats(self):
         ea = EA.read_text()
