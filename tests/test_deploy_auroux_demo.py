@@ -33,7 +33,7 @@ class AurouxDemoDeploymentTests(unittest.TestCase):
         self.assertIn("dkcapital-mt5-compiler-vnc", source)
         self.assertIn("/opt/dkcapital-mt5-compiler/workspace", source)
         self.assertIn("MetaEditor64.exe", source)
-        self.assertIn('-w \'/workspace/MetaTrader 5\' "$compiler_container"', source)
+        self.assertIn('-w \'/workspace/AurouxMetaEditor\' "$compiler_container"', source)
         self.assertIn('wine ./MetaEditor64.exe "/compile:$win_source" "/include:$win_include" /log', source)
         self.assertIn('cli_prefix=/home/compiler/.wine-auroux-cli', source)
         self.assertIn('wineboot -u', source)
