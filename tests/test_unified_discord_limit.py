@@ -64,6 +64,17 @@ class UnifiedLimitTests(unittest.TestCase):
         self.assertIn("bool firstStart=!FileIsExist(handledPath,FILE_COMMON)",s)
         self.assertIn('handledPath="DCL_"+IntegerToString(ExpectedAccountLogin)',s)
 
+    def test_account_probe_is_read_only(self):
+        probe=ROOT / "deploy" / "inspect-mt5-accounts-readonly.sh"
+        subprocess.run(["bash","-n",str(probe)],check=True,capture_output=True)
+        source=probe.read_text()
+        self.assertIn("MODE:",source)
+        self.assertIn("SERVER:",source)
+        self.assertIn("AGE_SECONDS:",source)
+        for prohibited in ("systemctl restart","systemctl stop",
+                           "docker restart","OrderSend","trade.Buy"):
+            self.assertNotIn(prohibited,source)
+
     def test_compiler_only_and_no_gws_change(self):
         subprocess.run(["bash","-n",str(COMPILER)], check=True,
                        capture_output=True)
