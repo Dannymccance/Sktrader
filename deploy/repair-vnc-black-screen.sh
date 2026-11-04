@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Repair ONLY the new :5/5905 VNC desktop when RFB connects but shows black.
+# Repair ONLY the new :5/5906 VNC desktop when RFB connects but shows black.
 # No trading services, MT5 Wine prefixes, compiler VNC or JIFU touched.
 set -Eeuo pipefail
 umask 077
@@ -25,7 +25,7 @@ find "$home/.vnc" -maxdepth 1 -type f \( -name '*.log' -o -name '*.out' \) \
 [[ "$(systemctl show -p FragmentPath --value "$unit")" == "$config" ]] ||
     fail "Unexpected VNC service location"
 grep -Fq 'User=dkvnc' "$config" || fail "Unexpected VNC service user"
-grep -Fq -- '-rfbport 5905 -localhost yes' "$config" ||
+grep -Fq -- '-rfbport 5906 -localhost yes' "$config" ||
     fail "Unexpected VNC port or network binding"
 grep -Fq -- '-xstartup /var/lib/dkcapital-desktop/.vnc/xstartup' "$config" ||
     fail "Unexpected VNC desktop startup script"
@@ -87,8 +87,8 @@ systemctl is-active --quiet "$unit" || {
     echo "Original xstartup backed up to $backup" >&2
     fail "New VNC service did not remain active"
 }
-ss -lnt | grep -Eq '127\.0\.0\.1:5905[[:space:]]' ||
-    fail "New VNC server is not listening on localhost port 5905"
+ss -lnt | grep -Eq '127\.0\.0\.1:5906[[:space:]]' ||
+    fail "New VNC server is not listening on localhost port 5906"
 
 echo "===== XFCE PROCESS CHECK ====="
 pgrep -a -u "$user" -f 'xfce4-session|xfwm4|xfdesktop|xfce4-panel|xterm' || true
@@ -103,6 +103,6 @@ fi
 echo "===== PROTECTED SYSTEMS UNCHANGED ====="
 docker ps -a --filter 'name=^/dkcapital-mt5-compiler-vnc$' \
     --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' || true
-echo "Only the new :5 / 5905 desktop service was restarted."
-echo "VNC password was not changed. Reconnect to 127.0.0.1::5905 through SSH."
+echo "Only the new :5 / 5906 desktop service was restarted."
+echo "VNC password was not changed. Reconnect to 127.0.0.1::5906 through SSH."
 echo "Previous xstartup backup: $backup"
