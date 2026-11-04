@@ -35,7 +35,7 @@ class StageUnifiedEA5906Tests(unittest.TestCase):
         self.assertIn('portable_experts="$program/MQL5/Experts"', src)
         self.assertIn('experts_dirs+=("$portable_experts")', src)
         self.assertIn('[[ -d "$roaming" ]]', src)
-        self.assertIn('[[ -d "$program/Config" &&', src)
+        self.assertIn('&& -d "$program/Config" &&', src)
         self.assertIn('-d "$program/Bases" && -d "$program/logs"', src)
         # If both layouts exist, refuse to pick one at random.
         self.assertIn('if (( ${#experts_dirs[@]} != 1 )); then', src)
