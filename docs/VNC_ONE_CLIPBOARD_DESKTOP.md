@@ -2,7 +2,10 @@
 
 Purpose: keep the isolated MetaEditor compiler on **5903**, retire the
 three known historical x11vnc observation viewers on 5901, 5902 and 5904,
-and create ONE new TigerVNC/XFCE desktop on **5906**. Port **5905** was\noccupied on the VPS, so we preserve that unidentified listener until inspected.\nA viewer labelled `jurspan-ai:155` is displaying the existing JIFU Xvfb\nscreen, NOT this new desktop.
+and create ONE new TigerVNC/XFCE desktop on **5906**. Port **5905** was
+occupied on the VPS, so we preserve that unidentified listener until inspected.
+A viewer labelled `jurspan-ai:155` is displaying the existing JIFU Xvfb
+screen, NOT this new desktop.
 
 The new desktop is a separate unprivileged Linux account named `dkvnc`.
 It does not import broker credentials, MT5 account data, or a Wine prefix.
@@ -12,7 +15,8 @@ and is left alone because the scanner collector uses it.
 
 ## Setup from VPS SSH
 
-First inspect current services (read-only). The new desktop uses port 5906\nbecause the VPS already had something bound on 5905:
+First inspect current services (read-only). The new desktop uses port 5906
+because the VPS already had something bound on 5905:
 
 ```bash
 cd /opt/sktrader
@@ -45,9 +49,10 @@ What the command does:
 
 The script does not stop/restart account MT5 services, remove their Wine
 files, kill unknown VNC processes, or stop sktrader-display. It does not
-touch the compiler 5903 port/container. Any unknown VNC listener still
-visible in the final inventory must be reviewed individually, not
-blindly terminated.
+touch the compiler 5903 port/container. The pre-existing VNC listener on 5905 is not terminated because its owner
+has not yet been verified. It may expose the JIFU display :155. Inspect
+that listener after the new desktop is confirmed working, then retire only
+its VNC process without interrupting the JIFU collector.
 
 ## Connect from Windows
 
