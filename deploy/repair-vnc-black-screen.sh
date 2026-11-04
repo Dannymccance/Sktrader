@@ -68,8 +68,7 @@ export DESKTOP_SESSION=xfce
 /usr/bin/xterm -title "DK Capital desktop - copy and paste test" \
     -geometry 110x35+55+55 &
 
-# Start the desktop directly. startxfce4 can invoke a second X11 startup
-# layer under an existing TigerVNC X server and leave an empty desktop.
+# Start XFCE session directly within TigerVNC's existing X server.
 /usr/bin/dbus-run-session -- /usr/bin/xfce4-session \
     >> "$HOME/.vnc/xfce-session.log" 2>&1
 echo "XFCE session exited; leaving diagnostic terminal running" \
