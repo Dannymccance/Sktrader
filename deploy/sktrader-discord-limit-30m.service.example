@@ -1,0 +1,23 @@
+[Unit]
+Description=DK Capital one-channel XAUUSD 30m limit signal listener (no broker access)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=dkmt5c
+Group=dkmt5c
+WorkingDirectory=/opt/sktrader
+Environment=HOME=/var/lib/dkcapital-mt5-3
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/sktrader/.venv/bin/python -u -m sktrader.discord_limit_bridge --channel-id 1565527578163552327 --token-file /var/lib/dkcapital-mt5-3/.local/share/sktrader/discord-bot-token --database /var/lib/dkcapital-mt5-3/.local/share/sktrader/discord-limit-30m.db --output /var/lib/dkcapital-mt5-3/.wine/drive_c/users/dkmt5c/AppData/Roaming/MetaQuotes/Terminal/Common/Files/discord_limit_30m_signals.csv
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+UMask=0077
+MemoryMax=400M
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
