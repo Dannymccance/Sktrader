@@ -83,10 +83,22 @@ systemctl is-active --quiet dkcapital-desktop-vnc.service ||
 [[ "$(getent passwd "$user" | cut -d: -f6)" == "$home" ]] ||
   die "Wrong dkvnc home"
 [[ -d "$mt5common" ]] || die "New MT5 Common/Files directory missing"
+if [[ -e "$unit" || -L "$unit" ]]; then
+  die "Monitor unit already exists. Refusing overwrite"
+fi
+if [[ "$(systemctl show "$service" -p LoadState --value)" != not-found ]]; then
+  die "Monitor unit has a pre-existing systemd definition; refusing override"
+fi
+if systemctl is-active --quiet "$existing_service"; then
+  die "An older actionable Discord listener is active; refusing duplicate"
+fi
+if [[ -e "$mt5common/discord_limit_30m_signals.csv" ]]; then
+  die "An actionable MT5 signal CSV already exists; verify the EA and investigate first"
+fi
 [[ -f /opt/sktrader/sktrader/discord_limit_bridge.py ]] ||
   die "Discord bridge source missing"
 command -v python3 >/dev/null || die "System Python 3 missing"
-if [[ -e "$venv" ]]; then
+if [[ -e "$venv" || -L "$venv" ]]; then
   [[ ! -L "$venv" && -d "$venv" ]] || die "Isolated Python virtualenv path is not a directory"
   [[ "$(stat -c %u "$venv")" == "$(id -u "$user")" ]] ||
     die "Existing isolated Python virtualenv owned by another account"
@@ -105,18 +117,6 @@ runuser -u "$user" -- env HOME="$home" \
 runuser -u "$user" -- env HOME="$home" PYTHONPATH=/opt/sktrader \
   "$python" -c 'import websockets, sktrader.discord_limit_bridge; print("Isolated bridge ready, websockets", websockets.__version__)' ||
   die "Discord bridge dependencies still unavailable in isolated virtualenv"
-if [[ -e "$unit" || -L "$unit" ]]; then
-  die "Monitor unit already exists. Refusing overwrite"
-fi
-if [[ "$(systemctl show "$service" -p LoadState --value)" != not-found ]]; then
-  die "Monitor unit has a pre-existing systemd definition; refusing override"
-fi
-if systemctl is-active --quiet "$existing_service"; then
-  die "An older actionable Discord listener is active; refusing duplicate"
-fi
-if [[ -e "$mt5common/discord_limit_30m_signals.csv" ]]; then
-  die "An actionable MT5 signal CSV already exists; verify the EA and investigate first"
-fi
 if [[ -d "$private" && "$(stat -c %u "$private")" != "$(id -u "$user")" ]]; then
   die "Monitor state directory is not owned by dkvnc"
 fi
