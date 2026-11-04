@@ -9,17 +9,22 @@ Independent system, not a modification to GWS, AUROUX, or the existing scanner c
   old Discord messages, no replay of old chat history.
 - Accept only a valid XAUUSD BUY/SELL signal with exactly one numeric **Point
   of Interest**. The source's Invalidation and Exit1 are intentionally ignored.
-- **BUY** -> BUY_LIMIT at POI; SL = POI - 10.00; TP = POI + 10.00.
-- **SELL** -> SELL_LIMIT at POI; SL = POI + 10.00; TP = POI - 10.00.
+- **BUY** -> BUY_LIMIT at POI; SL = POI - 7.50; TP = POI + 15.00.
+- **SELL** -> SELL_LIMIT at POI; SL = POI + 7.50; TP = POI - 15.00.
+- Reward-to-risk is **2:1** before fees and execution costs ($15 target / $7.50 stop).
 - Broker-specified pending order expiry = 30 minutes from the original
   Discord message creation time, not from when the EA happens to read it.
 - Per-order risk budget = 4% of current MT5 account balance, evaluated using
-  OrderCalcProfit on the broker's actual XAUUSD contract and account currency.
+  OrderCalcProfit using the $7.50 price-to-stop distance on the broker's
+  actual XAUUSD contract and account currency.
   Round lots **down** to the broker volume step. If the minimum trade would
   exceed the 4% budget, do not place it.
 - No market entries, stop entries, break even, trailing SL, partial exits, or
-  targets beyond TP1. Individual orders can overlap; **there is no aggregate
-  portfolio-risk cap**. Five independent 4% orders could put ~20% at risk.
+  targets beyond TP1. **Unrestricted overlap:** every distinct eligible signal
+  can have its own working limit order or position, even when earlier signals
+  remain open. Only duplicate Discord message IDs are blocked. There is **no
+  aggregate portfolio-risk cap**. Five independent 4% orders could put ~20%
+  of current balance at nominal risk.
 - Strictly demo-only on MetaQuotes-Demo GBP account login 5058169035 until
   explicitly reconfigured and reviewed. Separate MagicNumber 26110430.
 - Broker must support ORDER_TIME_SPECIFIED. No GTC substitute is used.

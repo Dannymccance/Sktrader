@@ -1,7 +1,9 @@
 // One-channel XAUUSD fixed-distance limit follower. DEMO only.
 // No market orders, trailing stops, break even, targets beyond TP1 or GWS access.
+// Unrestricted overlap: each distinct eligible Discord signal can open a new order;
+// only the SAME message ID is deduplicated. No aggregate portfolio risk cap.
 #property strict
-#property version "1.00"
+#property version "1.01"
 #include <Trade/Trade.mqh>
 CTrade trade;
 
@@ -121,12 +123,12 @@ bool Attempt(string id,string side,double entry,long issued,long expires) {
    }
    bool buy=(side=="BUY");
    double requested=entry;
-   double sl=NormalizeDouble(entry+(buy?-10.0:10.0),_Digits);
-   double tp=NormalizeDouble(entry+(buy?10.0:-10.0),_Digits);
+   double sl=NormalizeDouble(entry+(buy?-7.50:7.50),_Digits);
+   double tp=NormalizeDouble(entry+(buy?15.0:-15.0),_Digits);
    entry=NormalizeDouble(entry,_Digits);
    if(MathAbs(requested-entry)>1e-7 ||
-      MathAbs(MathAbs(entry-sl)-10.0)>1e-6 ||
-      MathAbs(MathAbs(tp-entry)-10.0)>1e-6 ||
+      MathAbs(MathAbs(entry-sl)-7.50)>1e-6 ||
+      MathAbs(MathAbs(tp-entry)-15.0)>1e-6 ||
       !OnTickGrid(entry) || !OnTickGrid(sl) || !OnTickGrid(tp)) {
       Print("LIMIT POI/SL/TP cannot be represented exactly on broker price grid ",id);
       return MarkHandled(id);
@@ -226,7 +228,7 @@ int OnInit() {
    }
    trade.SetExpertMagicNumber(MagicNumber);
    EventSetMillisecondTimer(PollMilliseconds);
-   Print("LIMIT follower active: channel 1565527578163552327, 4% balance risk, $10 SL/TP, 30m expiry");
+   Print("LIMIT follower active: channel 1565527578163552327, 4% balance risk per trade, $7.50 SL, $15 TP, 30m expiry, unrestricted overlap");
    return INIT_SUCCEEDED;
 }
 void OnDeinit(const int reason) { EventKillTimer(); }
