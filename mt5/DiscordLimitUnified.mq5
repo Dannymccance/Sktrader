@@ -17,6 +17,7 @@ input bool EnableNewEntries = false; // Defaults OFF, must arm explicitly
 input ulong MagicNumber = 26110430; // Distinct from AUROUX and GWS
 input int PollMilliseconds = 50;
 input int BrokerTelemetrySeconds = 5; // Account, positions, deals
+input int DealHistoryDays = 7; // Broker deal history export range
 input bool ExportMarketTelemetry = false; // OFF for lowest-latency order handling
 input int MarketTelemetryMs = 1000;
 input int BackfillBars = 1500;
@@ -246,6 +247,7 @@ int OnInit() {
       return INIT_FAILED;
    }
    if(PollMilliseconds<50 || MagicNumber==0 || BrokerTelemetrySeconds<1 ||
+      DealHistoryDays<1 || DealHistoryDays>30 ||
       MarketTelemetryMs<100 || BackfillBars<2 || BackfillBars>100000 ||
       BackfillTicks<1 || BackfillTicks>10000) return INIT_PARAMETERS_INCORRECT;
    handledPath="DCL_"+IntegerToString(ExpectedAccountLogin)+"_"+IntegerToString((long)MagicNumber)+"_"+HandledFile;
