@@ -120,10 +120,12 @@ bool Attempt(string id,string side,double entry,long issued,long expires) {
       return MarkHandled(id);
    }
    bool buy=(side=="BUY");
+   double requested=entry;
    double sl=NormalizeDouble(entry+(buy?-10.0:10.0),_Digits);
    double tp=NormalizeDouble(entry+(buy?10.0:-10.0),_Digits);
    entry=NormalizeDouble(entry,_Digits);
-   if(MathAbs(MathAbs(entry-sl)-10.0)>1e-6 ||
+   if(MathAbs(requested-entry)>1e-7 ||
+      MathAbs(MathAbs(entry-sl)-10.0)>1e-6 ||
       MathAbs(MathAbs(tp-entry)-10.0)>1e-6 ||
       !OnTickGrid(entry) || !OnTickGrid(sl) || !OnTickGrid(tp)) {
       Print("LIMIT POI/SL/TP cannot be represented exactly on broker price grid ",id);
