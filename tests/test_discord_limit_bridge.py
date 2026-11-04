@@ -81,8 +81,8 @@ class DiscordLimitBridgeTests(unittest.TestCase):
         self.message["embeds"] = []
         self.message["author"] = {"id": "508740193369587722", "bot": False}
         self.message["content"] = (
-            "XAUUSD\\n5M - SELL\\nPoint of Interest\\n4167.52875\\n"
-            "Invalidation\\n4177.52875\\nExit1\\n4157.52875"
+            "XAUUSD\n5M - SELL\nPoint of Interest\n4167.52875\n"
+            "Invalidation\n4177.52875\nExit1\n4157.52875"
         )
         signal = extract_signal(self.message, channel_id=CHANNEL_ID,
                                 author_id={"508740193369587722"},
