@@ -46,13 +46,15 @@ guaranteed 50ms end-to-end execution.
 ## Prepare listener (does not submit broker orders)
 
 Use the existing bot token at the existing configured secure file location.
-The bot must have View Channel permissions in channel 1565527578163552327,
-and the Discord Developer Portal must enable the privileged **Message
-Content Intent** if required to receive signal fields. GUILD_MESSAGES is
-requested too. The listener defaults to messages authored by that same bot.
-For a different trusted source bot, set `--author-id` to its actual Discord
-user ID in the service ExecStart line, not to a role or channel ID. Do not
-disable author checks.
+The bot must have View Channel permissions in channel 1565527578163552327.
+The listener defaults to messages authored by the same DK Capital bot.
+Discord makes the content of an app's own messages available without the
+privileged Message Content Intent, so the default listener uses only the
+standard GUILD_MESSAGES intent. For a different trusted source bot, set
+`--author-id` to its actual Discord user ID in the service ExecStart line,
+not a role or channel ID. In that case the listener requests privileged
+MESSAGE_CONTENT, which must first be enabled for the bot in Discord's
+Developer Portal. Do not disable the trusted-author restriction.
 
 ```bash
 cd /opt/sktrader
