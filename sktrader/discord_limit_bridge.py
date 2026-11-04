@@ -104,9 +104,12 @@ def extract_signal(message: dict, *, channel_id: str, author_id: str | set[str] 
 
 
 class SignalStore:
-    def __init__(self, db: Path, output: Path):
+    def __init__(self, db: Path, output: Path, *, max_input_age_sec: int = 0):
+        if not 0 <= max_input_age_sec <= LIFETIME_SECONDS:
+            raise ValueError("input freshness seconds outside 0..1800")
         db.parent.mkdir(parents=True, exist_ok=True)
         self.output = output
+        self.max_input_age_sec = max_input_age_sec
         self.con = sqlite3.connect(db, timeout=5)
         self.con.execute("PRAGMA journal_mode=WAL")
         self.con.execute("""CREATE TABLE IF NOT EXISTS limit_messages(
@@ -121,6 +124,8 @@ class SignalStore:
         receipt = int(time.time() * 1000) if now_ms is None else now_ms
         if receipt >= expires * 1000:
             return False
+        if self.max_input_age_sec and receipt // 1000 - issued > self.max_input_age_sec:
+            return False
         with self.con:
             cur = self.con.execute(
                 "INSERT OR IGNORE INTO limit_messages VALUES(?,?,?,?,?,?)",
@@ -133,9 +138,13 @@ class SignalStore:
 
     def publish(self, *, now_s: int | None = None):
         now_s = int(time.time()) if now_s is None else now_s
+        # Operational recovery must not replay a stale unexecuted trade.
+        # Zero preserves historical monitor behavior; production passes 60.
+        oldest = now_s - self.max_input_age_sec if self.max_input_age_sec else 0
         rows = self.con.execute(
             "SELECT id,side,poi,issued_s,expires_s FROM limit_messages "
-            "WHERE expires_s>? ORDER BY issued_s,id", (now_s,)
+            "WHERE expires_s>? AND issued_s>=? ORDER BY issued_s,id",
+            (now_s, oldest)
         ).fetchall()
         self.output.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.output.with_name(self.output.name + ".new")
@@ -169,9 +178,48 @@ def bot_profile(token: str, channel_id: str) -> str:
     return str(bot["id"])
 
 
+class GatewayHealth:
+    """Private machine-readable Gateway liveness, never in an MT5 signal file."""
+
+    def __init__(self, path: Path | None):
+        self.path = path
+        self.last_ack = 0.0
+        self.interval_s = 0.0
+
+    def write(self, status: str, *, ack: bool = False, interval_s: float | None = None):
+        if not self.path:
+            return
+        now = time.time()
+        if ack:
+            self.last_ack = now
+        if interval_s is not None:
+            self.interval_s = interval_s
+        body = {
+            "version": 1, "status": status, "updated_at": now,
+            "last_ack_at": self.last_ack,
+            "heartbeat_interval_s": self.interval_s,
+            "pid": os.getpid(),
+        }
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.path.with_name(self.path.name + ".new")
+        fd = os.open(temporary, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+        try:
+            with os.fdopen(fd, "w", encoding="ascii") as f:
+                json.dump(body, f, sort_keys=True)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temporary, self.path)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+
+
 async def gateway_loop(token: str, store: SignalStore, channel_id: str,
                        author_id: str | set[str] | frozenset[str] | tuple[str, ...],
-                       *, foreign_author: bool = False, not_before_ms: int = 0):
+                       *, foreign_author: bool = False, not_before_ms: int = 0,
+                       health_file: Path | None = None):
+    health = GatewayHealth(health_file)
+    health.write("starting")
     session = None
     sequence = None
     resume_url = GATEWAY
@@ -183,6 +231,7 @@ async def gateway_loop(token: str, store: SignalStore, channel_id: str,
                 if hello.get("op") != 10:
                     raise RuntimeError("Discord Gateway did not send HELLO")
                 interval = hello["d"]["heartbeat_interval"] / 1000
+                health.write("connecting", interval_s=interval)
                 acknowledged = True
 
                 async def send(op, data):
@@ -217,6 +266,8 @@ async def gateway_loop(token: str, store: SignalStore, channel_id: str,
                         op = event.get("op")
                         if op == 11:
                             acknowledged = True
+                            health.write("ready", ack=True)
+                            store.publish()
                         elif op == 1:
                             await send(1, sequence)
                         elif op == 7:
@@ -235,9 +286,13 @@ async def gateway_loop(token: str, store: SignalStore, channel_id: str,
                                      channel_id, ",".join(sorted({author_id} if isinstance(author_id,str) else author_id)),
                                      not_before_ms)
                             backoff = 1
+                            health.write("ready", ack=True)
+                            store.publish()
                         elif op == 0 and event.get("t") == "RESUMED":
                             LOG.info("Discord Gateway resumed")
                             backoff = 1
+                            health.write("ready", ack=True)
+                            store.publish()
                         elif op == 0 and event.get("t") == "MESSAGE_CREATE":
                             signal = extract_signal(event["d"], channel_id=channel_id,
                                                     author_id=author_id,
@@ -245,6 +300,7 @@ async def gateway_loop(token: str, store: SignalStore, channel_id: str,
                             if signal and store.add(signal):
                                 LOG.info("Limit signal queued: id=%s side=%s POI=%s", *signal[:3])
                 finally:
+                    health.write("disconnected")
                     hb.cancel()
                     try:
                         await hb
@@ -270,6 +326,10 @@ def main():
                    help="Trusted Discord message author; repeat for an explicit allowlist. Defaults to this bot.")
     p.add_argument("--not-before-ms", type=int, default=0,
                    help="Ignore messages created before this UTC millisecond epoch, including reconnect replay")
+    p.add_argument("--health-file", type=Path,
+                   help="Owner-only Gateway ready/ACK heartbeat JSON for external watchdog")
+    p.add_argument("--max-input-age-sec", type=int, default=0,
+                   help="Publish only the last N seconds of new trade instructions, 0=legacy 30m policy")
     args = p.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     if not re.fullmatch(r"[0-9]{15,22}", args.channel_id):
@@ -283,10 +343,16 @@ def main():
         p.error("invalid trusted author id")
     if args.not_before_ms < 0 or args.not_before_ms > int(time.time() * 1000) + 5000:
         p.error("invalid not-before cutover timestamp")
-    store = SignalStore(args.database, args.output)
+    if not 0 <= args.max_input_age_sec <= LIFETIME_SECONDS:
+        p.error("invalid maximum input age seconds")
+    if args.health_file and (args.health_file == args.output or
+                             args.health_file == args.database):
+        p.error("health-file must be separate from signal and database paths")
+    store = SignalStore(args.database, args.output, max_input_age_sec=args.max_input_age_sec)
     asyncio.run(gateway_loop(token, store, args.channel_id, author_ids,
                              foreign_author=any(user_id != bot_id for user_id in author_ids),
-                             not_before_ms=args.not_before_ms))
+                             not_before_ms=args.not_before_ms,
+                             health_file=args.health_file))
 
 
 if __name__ == "__main__":
