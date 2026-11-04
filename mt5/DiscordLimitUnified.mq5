@@ -1,4 +1,5 @@
-// One EA: fixed-distance Discord limit trading + read-only broker telemetry.\n// Requires explicit broker identity and trading enablement before sending orders.
+// One EA: fixed-distance Discord limit trading + read-only broker telemetry.
+// Requires explicit broker identity and trading enablement before sending orders.
 // No market orders, trailing stops, break even, targets beyond TP1 or GWS access.
 // Unrestricted overlap: each distinct eligible Discord signal can open a new order;
 // only the SAME message ID is deduplicated. No aggregate portfolio risk cap.
