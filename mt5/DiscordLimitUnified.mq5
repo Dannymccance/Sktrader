@@ -1,19 +1,17 @@
 // One EA: fixed-distance Discord limit trading + read-only broker telemetry.
-// Requires explicit broker identity and trading enablement before sending orders.
+// Portable across logins, broker servers and DEMO/CONTEST/REAL account modes.
+// Independent hedged XAUUSD exits require a hedging account; netting is telemetry-only.
 // No market orders, trailing stops, break even, targets beyond TP1 or GWS access.
 // Unrestricted overlap: each distinct eligible Discord signal can open a new order;
 // only the SAME message ID is deduplicated. No aggregate portfolio risk cap.
 #property strict
-#property version "2.00"
+#property version "2.01"
 #include <Trade/Trade.mqh>
 CTrade trade;
 
 input string SignalFile = "discord_limit_30m_signals.csv"; // Terminal Common/Files
 input string HandledFile = "discord_limit_30m_handled.txt"; // Durable per-message dedupe
-input long ExpectedAccountLogin = 0; // REQUIRED: verified terminal login
-input string ExpectedAccountServer = ""; // REQUIRED: exact MT5 broker server
-input ENUM_ACCOUNT_TRADE_MODE RequiredTradeMode = ACCOUNT_TRADE_MODE_REAL;
-input bool EnableNewEntries = false; // Defaults OFF, must arm explicitly
+input bool EnableNewEntries = false; // Explicit trading arm, OFF on every new attachment
 input ulong MagicNumber = 26110430; // Distinct from AUROUX and GWS
 input int PollMilliseconds = 50;
 input int BrokerTelemetrySeconds = 5; // Account, positions, deals
@@ -37,12 +35,23 @@ bool telemetryUrgent = true;
 ulong last_tick_ms = 0;
 datetime last_bar_time = 0;
 
-bool ApprovedAccount() {
-   return ExpectedAccountLogin > 0 && StringLen(ExpectedAccountServer) > 0 &&
-      AccountInfoInteger(ACCOUNT_LOGIN) == ExpectedAccountLogin &&
-      AccountInfoString(ACCOUNT_SERVER) == ExpectedAccountServer &&
-      AccountInfoInteger(ACCOUNT_TRADE_MODE) == RequiredTradeMode &&
-      AccountInfoInteger(ACCOUNT_MARGIN_MODE) == ACCOUNT_MARGIN_MODE_RETAIL_HEDGING;
+// Dedupe is isolated per connected login AND broker server (no fixed account whitelist).
+string AccountDedupeScope() {
+   string server=AccountInfoString(ACCOUNT_SERVER);
+   long hash=0;
+   for(int i=0;i<StringLen(server);i++)
+      hash=(hash*131+(long)StringGetCharacter(server,i))%2147483647;
+   return IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN))+"_"+IntegerToString(hash);
+}
+bool SupportsIndependentPositions() {
+   return AccountInfoInteger(ACCOUNT_MARGIN_MODE)==ACCOUNT_MARGIN_MODE_RETAIL_HEDGING;
+}
+string TradeModeLabel() {
+   long mode=AccountInfoInteger(ACCOUNT_TRADE_MODE);
+   if(mode==ACCOUNT_TRADE_MODE_DEMO) return "DEMO";
+   if(mode==ACCOUNT_TRADE_MODE_CONTEST) return "CONTEST";
+   if(mode==ACCOUNT_TRADE_MODE_REAL) return "REAL";
+   return "UNKNOWN";
 }
 string firstFailureId = "";
 datetime lastWarning = 0;
@@ -163,7 +172,18 @@ bool Attempt(string id,string side,double entry,long issued,long expires) {
       Print("LIMIT POI/SL/TP cannot be represented exactly on broker price grid ",id);
       return MarkHandled(id);
    }
-   if(!ApprovedAccount() || !EnableNewEntries) return false;
+   if(!EnableNewEntries) return false;
+   if(!SupportsIndependentPositions()) {
+      // A netting position has only ONE broker SL/TP for the entire XAUUSD
+      // exposure. Submitting overlapping signals would silently break the
+      // per-signal 4% risk and 2R exit rules. Allow read-only telemetry.
+      WarnOnce(id,"netting/exchange account: independent overlapping SL/TP not supported");
+      return false;
+   }
+   if(AccountInfoInteger(ACCOUNT_LOGIN)<=0 || !AccountInfoInteger(ACCOUNT_TRADE_ALLOWED)) {
+      WarnOnce(id,"no connected trade-enabled MT5 account");
+      return false;
+   }
    if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) ||
       !MQLInfoInteger(MQL_TRADE_ALLOWED) ||
       !AccountInfoInteger(ACCOUNT_TRADE_EXPERT)) {
@@ -238,19 +258,15 @@ void ReadAndProcess(bool baselineOnly=false) {
    FileClose(f);
 }
 int OnInit() {
-   if(!ApprovedAccount()) {
-      Print("LIMIT telemetry/trading refused unexpected login, server, mode or non-hedging account");
-      return INIT_FAILED;
-   }
-   if(_Symbol!="XAUUSD" && _Symbol!="XAUUSD+") {
-      Print("LIMIT requires broker XAUUSD chart");
+   if(StringFind(_Symbol,"XAUUSD")!=0) {
+      Print("LIMIT requires XAUUSD or a broker XAUUSD-suffixed chart");
       return INIT_FAILED;
    }
    if(PollMilliseconds<50 || MagicNumber==0 || BrokerTelemetrySeconds<1 ||
       DealHistoryDays<1 || DealHistoryDays>30 ||
       MarketTelemetryMs<100 || BackfillBars<2 || BackfillBars>100000 ||
       BackfillTicks<1 || BackfillTicks>10000) return INIT_PARAMETERS_INCORRECT;
-   handledPath="DCL_"+IntegerToString(ExpectedAccountLogin)+"_"+IntegerToString((long)MagicNumber)+"_"+HandledFile;
+   handledPath="DCL_"+AccountDedupeScope()+"_"+IntegerToString((long)MagicNumber)+"_"+HandledFile;
    bool firstStart=!FileIsExist(handledPath,FILE_COMMON);
    LoadHandled();
    if(firstStart) {
@@ -263,8 +279,13 @@ int OnInit() {
    trade.SetExpertMagicNumber(MagicNumber);
    EventSetMillisecondTimer(PollMilliseconds);
    Print("UNIFIED LIMIT+TELEMETRY on ",AccountInfoString(ACCOUNT_SERVER),
-         " login ",ExpectedAccountLogin,". New entries enabled=",EnableNewEntries,
-         " | XAUUSD limits: 4% balance, $7.50 SL, $15 TP, 30m, unrestricted overlap.");
+         " login ",AccountInfoInteger(ACCOUNT_LOGIN),
+         " mode=",TradeModeLabel(),
+         " margin_mode=",AccountInfoInteger(ACCOUNT_MARGIN_MODE),
+         " new_entries=",EnableNewEntries,
+         " | XAUUSD limits: 4% balance, $7.50 SL, $15 TP, 30m.");
+   if(!SupportsIndependentPositions())
+      Print("LIMIT warning: netting/exchange account: telemetry active, independent-position trading blocked");
    return INIT_SUCCEEDED;
 }
 void OnDeinit(const int reason) { EventKillTimer(); }
@@ -274,8 +295,8 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
    telemetryUrgent=true;
 }
 void OnTimer() {
-   if(!ApprovedAccount()) return;
    // Order placement ALWAYS executes first. Telemetry cannot preempt this step.
+   // The EA remains attached for telemetry on ANY account mode.
    ReadAndProcess(!EnableNewEntries);
    ulong now=GetTickCount64();
    // Trade transaction bursts can produce multiple callbacks. Coalesce
@@ -307,7 +328,7 @@ void PublishBrokerTelemetry() {
              "balance","equity","margin","margin_free","floating_profit",
              "positions","orders");
    FileWrite(f,(string)AccountInfoInteger(ACCOUNT_LOGIN),
-             AccountInfoInteger(ACCOUNT_TRADE_MODE)==ACCOUNT_TRADE_MODE_DEMO?"DEMO":"REAL",
+             TradeModeLabel(),
              AccountInfoString(ACCOUNT_CURRENCY),AccountInfoString(ACCOUNT_SERVER),
              (string)(long)TimeGMT(),
              DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE),2),
@@ -438,7 +459,7 @@ void PublishMarketTelemetry() {
                 "contract_size","tick_size","tick_value","volume_min",
                 "volume_max","volume_step","generated_at");
       FileWrite(f,(string)AccountInfoInteger(ACCOUNT_LOGIN),
-                AccountInfoInteger(ACCOUNT_TRADE_MODE)==ACCOUNT_TRADE_MODE_DEMO?"DEMO":"REAL",
+                TradeModeLabel(),
                 AccountInfoString(ACCOUNT_CURRENCY),AccountInfoString(ACCOUNT_SERVER),symbol,
                 DoubleToString(SymbolInfoDouble(symbol,SYMBOL_TRADE_CONTRACT_SIZE),4),
                 DoubleToString(SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_SIZE),8),

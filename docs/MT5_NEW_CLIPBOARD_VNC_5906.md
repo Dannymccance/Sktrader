@@ -60,8 +60,11 @@ MT5 login GUI using the real or demo account and **exact broker server**
 shown by your broker. Never paste credentials into ChatGPT or Discord.
 
 Before putting the new unified EA on this terminal, verify:
-- Actual broker login, server, account mode, balance currency and
-  hedge/netting account mode in the MT5 UI.
+- Account login and server for selecting the correct terminal data folder
+  and checking telemetry routing, not as hardcoded EA authorizations.
+- Account balance currency, XAUUSD contract specification and margin mode.
+  Netting/exchange accounts support telemetry only until an independently
+  risk-validated netting position manager exists.
 - Correct XAUUSD symbol and that the terminal is connected.
 - The new terminal's distinct data folder under
   `/var/lib/dkcapital-desktop/.wine-mt5`.
@@ -70,9 +73,11 @@ Before putting the new unified EA on this terminal, verify:
 - Existing Discord listener is redirected to the new prefix's Common Files
   only after reviewing and testing the account-specific cutover.
 
-The unified EA defaults to `EnableNewEntries=false` and requires a
-verified account login and server before it can initialize. No live trading
-will be enabled by this install.
+Unified EA v2.01 can initialize on any MT5 login, broker server and
+DEMO/CONTEST/REAL mode without input-specific whitelists.
+It defaults to `EnableNewEntries=false`. No trading will be enabled by
+this installation. Independent overlapping SL/TP entries remain limited
+to hedging accounts.
 
 For diagnostics, in root SSH:
 
