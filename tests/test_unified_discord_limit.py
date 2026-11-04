@@ -94,6 +94,19 @@ class UnifiedLimitTests(unittest.TestCase):
                            "docker restart","OrderSend","trade.Buy"):
             self.assertNotIn(prohibited,source)
 
+    def test_metaeditor_warning_80_and_verified_artifact(self):
+        # The compilation log showed warning 80 at the mixed AND/OR
+        # signal validation expression. It must now be unambiguous.
+        self.assertIn('if((side!="BUY" && side!="SELL") || entry<=0)', self.src)
+        source = COMPILER.read_text()
+        self.assertIn('compiler_rc=0', source)
+        self.assertIn('compiler_rc=$?', source)
+        self.assertIn('if [[ "$compiler_rc" == 124 || "$compiler_rc" == 137 ]]', source)
+        self.assertIn(r'Result:\s*(\d+)\s+errors?,\s*(\d+)\s+warnings?', source)
+        self.assertIn('if errors or warnings:', source)
+        self.assertIn('[[ -s "$binary" && "$binary" -nt "$candidate" ]]', source)
+        self.assertIn('cmp -s "$binary" "$output"', source)
+
     def test_compiler_only_and_no_gws_change(self):
         subprocess.run(["bash","-n",str(COMPILER)], check=True,
                        capture_output=True)
