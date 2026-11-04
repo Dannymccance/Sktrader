@@ -1,0 +1,80 @@
+"""Unified Discord limit EA: one chart EA handles orders and broker telemetry."""
+import subprocess
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+EA = ROOT / "mt5" / "DiscordLimitUnified.mq5"
+COMPILER = ROOT / "deploy" / "compile-discord-limit-unified.sh"
+
+
+class UnifiedLimitTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.src = EA.read_text()
+
+    def test_account_fail_closed(self):
+        s = self.src
+        self.assertIn("input long ExpectedAccountLogin = 0;", s)
+        self.assertIn('input string ExpectedAccountServer = "";', s)
+        self.assertIn("RequiredTradeMode = ACCOUNT_TRADE_MODE_REAL", s)
+        self.assertIn("input bool EnableNewEntries = false;", s)
+        self.assertIn("ACCOUNT_MARGIN_MODE_RETAIL_HEDGING", s)
+        self.assertIn('if(!ApprovedAccount()) return;', s)
+
+    def test_exact_trade_policy(self):
+        s = self.src
+        for pattern in (
+            "trade.BuyLimit(", "trade.SellLimit(",
+            "entry+(buy?-7.50:7.50)", "entry+(buy?15.0:-15.0)",
+            "MathAbs(MathAbs(entry-sl)-7.50)>1e-6",
+            "MathAbs(MathAbs(tp-entry)-15.0)>1e-6",
+            "balance*0.04", "MathFloor(requested/step",
+            "expires-issued!=1800", "ORDER_TIME_SPECIFIED",
+            "if(AlreadyOrdered(id)) return MarkHandled(id);",
+        ):
+            self.assertIn(pattern, s)
+        for pattern in (
+            "trade.Buy(", "trade.Sell(", "trade.BuyStop(", "trade.SellStop(",
+            "HasOpenAuroux", "MaxAggregateRisk", "MaxPortfolioRisk",
+        ):
+            self.assertNotIn(pattern, s)
+
+    def test_one_ea_for_trading_and_telemetry(self):
+        s=self.src
+        self.assertEqual(s.count("void OnTimer()"), 1)
+        self.assertEqual(s.count("int OnInit()"), 1)
+        self.assertIn("ReadAndProcess(!EnableNewEntries);",s)
+        self.assertIn("void PublishBrokerTelemetry()",s)
+        self.assertIn("void PublishMarketTelemetry()",s)
+        self.assertIn("void OnTradeTransaction(",s)
+        self.assertIn('SnapshotFile = "discord_limit_account.csv"',s)
+        self.assertIn('PositionFile = "discord_limit_positions.csv"',s)
+        self.assertIn('DealFile = "discord_limit_deals.csv"',s)
+        self.assertIn("input int BrokerTelemetrySeconds = 5;",s)
+        self.assertIn("input bool ExportMarketTelemetry = false;",s)
+        self.assertLess(s.index("ReadAndProcess(!EnableNewEntries);"),
+                        s.index("PublishBrokerTelemetry();"))
+        self.assertLess(s.index("ReadAndProcess(!EnableNewEntries);"),
+                        s.index("PublishMarketTelemetry();"))
+
+    def test_disable_new_entries_checkpoints_unhandled_signals(self):
+        s=self.src
+        self.assertIn("ReadAndProcess(!EnableNewEntries);",s)
+        self.assertIn("bool firstStart=!FileIsExist(handledPath,FILE_COMMON)",s)
+        self.assertIn('handledPath="DCL_"+IntegerToString(ExpectedAccountLogin)',s)
+
+    def test_compiler_only_and_no_gws_change(self):
+        subprocess.run(["bash","-n",str(COMPILER)], check=True,
+                       capture_output=True)
+        content=COMPILER.read_text()
+        self.assertIn("dkcapital-mt5-compiler-vnc",content)
+        self.assertIn("DiscordLimitUnified.mq5",content)
+        self.assertIn("No MT5 terminal was changed",content)
+        self.assertNotIn("systemctl restart",content)
+        self.assertNotIn("systemctl stop",content)
+        self.assertNotIn('install -o dkmt5c',content)
+
+
+if __name__ == "__main__":
+    unittest.main()
