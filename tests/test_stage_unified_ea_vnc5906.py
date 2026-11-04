@@ -30,6 +30,16 @@ class StageUnifiedEA5906Tests(unittest.TestCase):
         self.assertIn("-rfbport 5906 -localhost yes", src)
         self.assertIn('roaming="$prefix/drive_c/users/$user/AppData/Roaming/MetaQuotes/Terminal"', src)
         self.assertIn('if (( ${#experts_dirs[@]} != 1 )); then', src)
+        # This live VNC terminal stores Experts under Program Files with
+        # Bases, Config and logs, not in the standard Roaming folder.
+        self.assertIn('portable_experts="$program/MQL5/Experts"', src)
+        self.assertIn('experts_dirs+=("$portable_experts")', src)
+        self.assertIn('[[ -d "$roaming" ]]', src)
+        self.assertIn('[[ -d "$program/Config" &&', src)
+        self.assertIn('-d "$program/Bases" && -d "$program/logs"', src)
+        # If both layouts exist, refuse to pick one at random.
+        self.assertIn('if (( ${#experts_dirs[@]} != 1 )); then', src)
+        self.assertIn('data directory ambiguous/missing', src)
         self.assertIn("realpath -e", src)
         self.assertIn("outside the isolated MT5 Wine prefix", src)
 
