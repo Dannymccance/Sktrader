@@ -10,13 +10,13 @@ class VNCScreenRepairTests(unittest.TestCase):
     def test_shell_syntax(self):
         subprocess.run(["bash","-n",str(SCRIPT)],check=True,capture_output=True)
 
-    def test_repair_only_5905_service(self):
+    def test_repair_only_5906_service(self):
         s=SCRIPT.read_text()
         self.assertIn("dkcapital-desktop-vnc.service",s)
         self.assertIn("User=dkvnc",s)
-        self.assertIn("-rfbport 5905 -localhost yes",s)
+        self.assertIn("-rfbport 5906 -localhost yes",s)
         self.assertIn('systemctl restart "$unit"',s)
-        self.assertIn("Only the new :5 / 5905 desktop service was restarted",s)
+        self.assertIn("Only the new :5 / 5906 desktop service was restarted",s)
         for forbidden in ("systemctl restart dkcapital-mt5","systemctl stop dkcapital-mt5",
                           "systemctl stop sktrader","docker stop","docker rm",
                           "rm -rf /var/lib","systemctl restart dkcapital-vnc"):
