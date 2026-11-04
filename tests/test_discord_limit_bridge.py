@@ -1,6 +1,7 @@
 import json
 import sqlite3
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -16,7 +17,7 @@ def snowflake(timestamp_ms: int) -> str:
 
 class DiscordLimitBridgeTests(unittest.TestCase):
     def setUp(self):
-        self.now_ms = 1793790000000
+        self.now_ms = int(time.time() * 1000)
         self.author = "1565500000000000000"
         self.message = {
             "id": snowflake(self.now_ms - 500),
