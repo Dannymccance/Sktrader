@@ -1,7 +1,7 @@
 """Low-latency Discord channel -> MT5 signal file. Never places broker orders.
 
-Only MESSAGE_CREATE events from one pinned Discord channel and one pinned
-author are eligible. The EA is responsible for placing limit orders.
+Only fresh MESSAGE_CREATE events from one pinned Discord channel and an
+explicit trusted-author allowlist are eligible. The EA places limit orders.
 """
 from __future__ import annotations
 
@@ -38,11 +38,13 @@ def message_time_ms(message_id: str) -> int:
     return (int(message_id) >> 22) + DISCORD_EPOCH_MS
 
 
-def extract_signal(message: dict, *, channel_id: str, author_id: str, now_ms: int | None = None):
+def extract_signal(message: dict, *, channel_id: str, author_id: str | set[str] | frozenset[str] | tuple[str, ...], now_ms: int | None = None,
+                   not_before_ms: int = 0):
     """Return (id, side, POI, created_s, expiry_s), or None if ineligible."""
     if str(message.get("channel_id")) != channel_id:
         return None
-    if str((message.get("author") or {}).get("id")) != author_id:
+    authors = {author_id} if isinstance(author_id, str) else set(author_id)
+    if not authors or str((message.get("author") or {}).get("id")) not in authors:
         return None
     msg_id = str(message.get("id", ""))
     try:
@@ -50,6 +52,10 @@ def extract_signal(message: dict, *, channel_id: str, author_id: str, now_ms: in
     except ValueError:
         return None
     current = int(time.time() * 1000) if now_ms is None else now_ms
+    # A persistent cutover epoch prevents Gateway reconnect/resume replay of
+    # previously posted signals, even while their 30-minute TTL remains valid.
+    if created < not_before_ms:
+        return None
     if created > current + 5000 or current >= created + LIFETIME_SECONDS * 1000:
         return None
 
@@ -153,7 +159,9 @@ def bot_profile(token: str, channel_id: str) -> str:
     return str(bot["id"])
 
 
-async def gateway_loop(token: str, store: SignalStore, channel_id: str, author_id: str, *, foreign_author: bool = False):
+async def gateway_loop(token: str, store: SignalStore, channel_id: str,
+                       author_id: str | set[str] | frozenset[str] | tuple[str, ...],
+                       *, foreign_author: bool = False, not_before_ms: int = 0):
     session = None
     sequence = None
     resume_url = GATEWAY
@@ -213,15 +221,17 @@ async def gateway_loop(token: str, store: SignalStore, channel_id: str, author_i
                             resume_url = event["d"].get("resume_gateway_url", GATEWAY)
                             if "?" not in resume_url:
                                 resume_url += "?v=10&encoding=json"
-                            LOG.info("Discord Gateway connected; channel %s, author %s",
-                                     channel_id, author_id)
+                            LOG.info("Discord Gateway connected; channel %s, trusted authors %s, cutoff_ms=%s",
+                                     channel_id, ",".join(sorted({author_id} if isinstance(author_id,str) else author_id)),
+                                     not_before_ms)
                             backoff = 1
                         elif op == 0 and event.get("t") == "RESUMED":
                             LOG.info("Discord Gateway resumed")
                             backoff = 1
                         elif op == 0 and event.get("t") == "MESSAGE_CREATE":
                             signal = extract_signal(event["d"], channel_id=channel_id,
-                                                    author_id=author_id)
+                                                    author_id=author_id,
+                                                    not_before_ms=not_before_ms)
                             if signal and store.add(signal):
                                 LOG.info("Limit signal queued: id=%s side=%s POI=%s", *signal[:3])
                 finally:
@@ -246,7 +256,10 @@ def main():
     p.add_argument("--token-file", required=True, type=Path)
     p.add_argument("--database", required=True, type=Path)
     p.add_argument("--output", required=True, type=Path)
-    p.add_argument("--author-id", help="Explicit trusted message author; defaults to this bot")
+    p.add_argument("--author-id", action="append",
+                   help="Trusted Discord message author; repeat for an explicit allowlist. Defaults to this bot.")
+    p.add_argument("--not-before-ms", type=int, default=0,
+                   help="Ignore messages created before this UTC millisecond epoch, including reconnect replay")
     args = p.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     if not re.fullmatch(r"[0-9]{15,22}", args.channel_id):
@@ -255,12 +268,15 @@ def main():
     if not token:
         p.error("empty bot token file")
     bot_id = bot_profile(token, args.channel_id)
-    author_id = args.author_id or bot_id
-    if not re.fullmatch(r"[0-9]{15,22}", author_id):
+    author_ids = set(args.author_id) if args.author_id else {bot_id}
+    if not author_ids or any(not re.fullmatch(r"[0-9]{15,22}", user_id) for user_id in author_ids):
         p.error("invalid trusted author id")
+    if args.not_before_ms < 0 or args.not_before_ms > int(time.time() * 1000) + 5000:
+        p.error("invalid not-before cutover timestamp")
     store = SignalStore(args.database, args.output)
-    asyncio.run(gateway_loop(token, store, args.channel_id, author_id,
-                             foreign_author=(author_id != bot_id)))
+    asyncio.run(gateway_loop(token, store, args.channel_id, author_ids,
+                             foreign_author=any(user_id != bot_id for user_id in author_ids),
+                             not_before_ms=args.not_before_ms))
 
 
 if __name__ == "__main__":
