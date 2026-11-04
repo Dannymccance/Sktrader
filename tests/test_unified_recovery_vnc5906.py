@@ -58,7 +58,9 @@ class RecoveryWatchdogTests(unittest.TestCase):
             store.publish(now_s=now+120)
             self.assertEqual(csvfile.read_text(),"")
             store.con.close()
-            restarted=SignalStore(db,csvfile,max_input_age_sec=60)
+            # Simulate a service restart 120s later, not at test wall-clock now.
+            with mock.patch("sktrader.discord_limit_bridge.time.time", return_value=now+120):
+                restarted=SignalStore(db,csvfile,max_input_age_sec=60)
             self.assertEqual(csvfile.read_text(),"")
             restarted.con.close()
 
