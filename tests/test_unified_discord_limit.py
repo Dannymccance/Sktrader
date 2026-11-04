@@ -13,14 +13,31 @@ class UnifiedLimitTests(unittest.TestCase):
     def setUpClass(cls):
         cls.src = EA.read_text()
 
-    def test_account_fail_closed(self):
+    def test_account_agnostic_trading_and_telemetry(self):
         s = self.src
-        self.assertIn("input long ExpectedAccountLogin = 0;", s)
-        self.assertIn('input string ExpectedAccountServer = "";', s)
-        self.assertIn("RequiredTradeMode = ACCOUNT_TRADE_MODE_REAL", s)
+        self.assertNotIn("ExpectedAccountLogin", s)
+        self.assertNotIn("ExpectedAccountServer", s)
+        self.assertNotIn("RequiredTradeMode", s)
+        self.assertNotIn("ApprovedAccount()", s)
         self.assertIn("input bool EnableNewEntries = false;", s)
-        self.assertIn("ACCOUNT_MARGIN_MODE_RETAIL_HEDGING", s)
-        self.assertIn('if(!ApprovedAccount()) return;', s)
+        self.assertIn("string AccountDedupeScope()", s)
+        self.assertIn("AccountInfoInteger(ACCOUNT_LOGIN)", s)
+        self.assertIn("AccountInfoString(ACCOUNT_SERVER)", s)
+        self.assertIn("ACCOUNT_TRADE_MODE_CONTEST", s)
+        self.assertIn("ACCOUNT_TRADE_MODE_DEMO", s)
+        self.assertIn("ACCOUNT_TRADE_MODE_REAL", s)
+        self.assertIn("TradeModeLabel()", s)
+        self.assertIn('StringFind(_Symbol,"XAUUSD")!=0', s)
+        # Netting still attaches for telemetry; entries are prevented to
+        # preserve independent 4%-risk positions and broker-native SL/TP.
+        self.assertIn("bool SupportsIndependentPositions()", s)
+        self.assertIn("if(!SupportsIndependentPositions()) {", s)
+        self.assertIn("netting/exchange account", s)
+        init = s[s.index("int OnInit()"):s.index("void OnDeinit(")]
+        self.assertNotIn("INIT_FAILED", init.split('if(StringFind(_Symbol,',1)[0])
+        self.assertNotIn("if(!SupportsIndependentPositions()) return INIT_FAILED", init)
+        self.assertNotIn("ACCOUNT_MARGIN_MODE_RETAIL_HEDGING", init)
+        self.assertNotIn("ACCOUNT_TRADE_MODE_REAL", init)
 
     def test_exact_trade_policy(self):
         s = self.src
@@ -64,7 +81,7 @@ class UnifiedLimitTests(unittest.TestCase):
         s=self.src
         self.assertIn("ReadAndProcess(!EnableNewEntries);",s)
         self.assertIn("bool firstStart=!FileIsExist(handledPath,FILE_COMMON)",s)
-        self.assertIn('handledPath="DCL_"+IntegerToString(ExpectedAccountLogin)',s)
+        self.assertIn('handledPath="DCL_"+AccountDedupeScope()',s)
 
     def test_account_probe_is_read_only(self):
         probe=ROOT / "deploy" / "inspect-mt5-accounts-readonly.sh"
