@@ -50,9 +50,44 @@ class DiscordLimitBridgeTests(unittest.TestCase):
         signal = extract_signal(self.message, channel_id=CHANNEL_ID,
                                 author_id=self.author, now_ms=self.now_ms)
         self.assertEqual(signal[1], "BUY")
-        self.assertEqual(signal[2], "3905.05000")
+        self.assertEqual(signal[2], "3905.05")
         self.assertEqual(signal[4]-signal[3], LIFETIME_SECONDS)
         self.assertEqual(message_time_ms(signal[0]), self.now_ms-500)
+
+    def test_five_decimal_scanner_poi_rounds_to_two_for_broker(self):
+        field = self.message["embeds"][0]["fields"][0]
+        cases = (
+            ("4167.52875", "4167.53"),
+            ("3067.52875", "3067.53"),
+            ("3905.05000", "3905.05"),
+            ("3905.05499", "3905.05"),
+            ("3905.05500", "3905.06"),
+            ("3905.00000", "3905.00"),
+            ("3905", "3905.00"),
+            ("0.001", None),
+        )
+        for source, expected in cases:
+            with self.subTest(source=source):
+                field["value"] = source
+                signal = extract_signal(self.message, channel_id=CHANNEL_ID,
+                                        author_id=self.author, now_ms=self.now_ms)
+                if expected is None:
+                    self.assertIsNone(signal)
+                else:
+                    self.assertEqual(signal[2], expected)
+                    self.assertEqual(signal[4] - signal[3], LIFETIME_SECONDS)
+
+    def test_human_plaintext_poi_rounds_to_two(self):
+        self.message["embeds"] = []
+        self.message["author"] = {"id": "508740193369587722", "bot": False}
+        self.message["content"] = (
+            "XAUUSD\n5M - SELL\nPoint of Interest\n4167.52875\n"
+            "Invalidation\n4177.52875\nExit1\n4157.52875"
+        )
+        signal = extract_signal(self.message, channel_id=CHANNEL_ID,
+                                author_id={"508740193369587722"},
+                                now_ms=self.now_ms)
+        self.assertEqual(signal[1:3], ("SELL", "4167.53"))
 
     def test_both_trusted_authors_without_untrusted_users(self):
         bot_id = "1554225452091048017"
