@@ -1,4 +1,5 @@
 import json
+import subprocess
 import sqlite3
 import tempfile
 import time
@@ -96,6 +97,17 @@ class DiscordLimitBridgeTests(unittest.TestCase):
             self.assertEqual(reopened.con.execute(
                 "SELECT COUNT(*) FROM limit_messages").fetchone()[0],1)
             reopened.con.close()
+
+    def test_compile_staging_script_isolated(self):
+        script=Path(__file__).resolve().parents[1]/"deploy"/"stage-discord-limit-30m-ea.sh"
+        subprocess.run(["bash","-n",str(script)],check=True,capture_output=True)
+        contents=script.read_text()
+        self.assertIn("dkcapital-mt5-compiler-vnc", contents)
+        self.assertIn("DiscordChannelLimit30m.mq5", contents)
+        self.assertIn("5058169035", contents)
+        self.assertIn("No existing MT5 service", contents)
+        self.assertNotIn("systemctl restart", contents)
+        self.assertNotIn("systemctl stop", contents)
 
     def test_no_market_fallback_in_ea(self):
         ea=(Path(__file__).resolve().parents[1]/"mt5"/"DiscordChannelLimit30m.mq5").read_text()
