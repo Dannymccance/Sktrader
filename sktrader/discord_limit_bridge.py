@@ -259,7 +259,8 @@ def main():
     if not re.fullmatch(r"[0-9]{15,22}", author_id):
         p.error("invalid trusted author id")
     store = SignalStore(args.database, args.output)
-    asyncio.run(gateway_loop(token, store, args.channel_id, author_id,\n                             foreign_author=(author_id != bot_id)))
+    asyncio.run(gateway_loop(token, store, args.channel_id, author_id,
+                             foreign_author=(author_id != bot_id)))
 
 
 if __name__ == "__main__":
