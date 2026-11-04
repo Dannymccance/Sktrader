@@ -61,6 +61,19 @@ for ((i=0;i<12;i++)); do
 done
 [[ -s "$stage/DiscordLimitUnified.ex5" && -s "$stage/DiscordLimitUnified.log" ]] || {
     echo "MetaEditor did not produce both EX5 and compile log" >&2
+    if [[ -s "$stage/DiscordLimitUnified.log" ]]; then
+        echo "===== ACTUAL METAEDITOR COMPILER ERRORS =====" >&2
+        python3 - "$stage/DiscordLimitUnified.log" <<'PY'
+import pathlib,sys
+raw=pathlib.Path(sys.argv[1]).read_bytes()
+if raw.startswith((b"\xff\xfe",b"\xfe\xff")): log=raw.decode("utf-16",errors="replace")
+elif raw.count(b"\0")>len(raw)//8: log=raw.decode("utf-16-le",errors="replace")
+else: log=raw.decode("utf-8",errors="replace")
+for line in log.splitlines()[-100:]:
+    print(line)
+PY
+    fi
+    echo "===== WINE COMPILER OUTPUT =====" >&2
     tail -50 "$stage/compile.stdout" >&2 || true
     ls -lah "$stage" >&2
     echo "Compiler diagnostics: $stage" >&2
