@@ -156,7 +156,7 @@ bool Attempt(string id,string side,double entry,long issued,long expires) {
       Print("LIMIT expired or invalid timing ",id);
       return MarkHandled(id);
    }
-   if(side!="BUY" && side!="SELL" || entry<=0) {
+   if((side!="BUY" && side!="SELL") || entry<=0) {
       Print("LIMIT malformed signal ",id);
       return MarkHandled(id);
    }
