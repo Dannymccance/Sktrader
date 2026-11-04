@@ -32,7 +32,6 @@ class AuthorSelectionTests(unittest.TestCase):
         self.assertIn("systemctl restart \"$monitor_service\"",s)
         self.assertIn("discord-limit-monitor.csv",s)
         self.assertIn("refusing to overwrite it",s)
-        self.assertIn("^\"[0-9]{15,22}\"$",s) if False else None
         self.assertIn("^[0-9]{15,22}$",s)
         for forbidden in ("systemctl restart dkcapital-mt5",
                           "systemctl restart sktrader.service",
