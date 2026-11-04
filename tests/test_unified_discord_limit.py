@@ -52,6 +52,8 @@ class UnifiedLimitTests(unittest.TestCase):
         self.assertIn('PositionFile = "discord_limit_positions.csv"',s)
         self.assertIn('DealFile = "discord_limit_deals.csv"',s)
         self.assertIn("input int BrokerTelemetrySeconds = 5;",s)
+        self.assertIn("input int DealHistoryDays = 7;",s)
+        self.assertIn("DealHistoryDays<1 || DealHistoryDays>30",s)
         self.assertIn("input bool ExportMarketTelemetry = false;",s)
         self.assertLess(s.index("ReadAndProcess(!EnableNewEntries);"),
                         s.index("PublishBrokerTelemetry();"))
@@ -82,6 +84,8 @@ class UnifiedLimitTests(unittest.TestCase):
         self.assertIn("dkcapital-mt5-compiler-vnc",content)
         self.assertIn("DiscordLimitUnified.mq5",content)
         self.assertIn("No MT5 terminal was changed",content)
+        self.assertIn("ACTUAL METAEDITOR COMPILER ERRORS",content)
+        self.assertIn('"$stage/DiscordLimitUnified.log"',content)
         self.assertNotIn("systemctl restart",content)
         self.assertNotIn("systemctl stop",content)
         self.assertNotIn('install -o dkmt5c',content)
