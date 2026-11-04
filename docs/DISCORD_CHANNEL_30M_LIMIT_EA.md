@@ -1,5 +1,13 @@
 # Discord channel 1565527578163552327 -> fixed-risk XAUUSD limit EA
 
+**Deployment update:** Use the combined `mt5/DiscordLimitUnified.mq5`
+instead when one chart EA must handle both trades and broker telemetry.
+See `docs/DISCORD_UNIFIED_LIMIT_TELEMETRY_LIVE.md`. The standalone
+`DiscordChannelLimit30m.mq5` source remains here only for backwards
+compatibility and must NOT be simultaneously attached on the same account
+and channel. The old compile-and-stage command below is DEMO-only.
+
+
 Independent system, not a modification to GWS, AUROUX, or the existing scanner collector.
 
 ## Exact strategy
