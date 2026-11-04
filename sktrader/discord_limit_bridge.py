@@ -24,7 +24,7 @@ LOG = logging.getLogger("sktrader.discord_limit")
 CHANNEL_ID = "1565527578163552327"
 DISCORD_EPOCH_MS = 1420070400000
 LIFETIME_SECONDS = 1800
-GATEWAY_INTENTS = (1 << 9) | (1 << 15)  # GUILD_MESSAGES, MESSAGE_CONTENT
+GATEWAY_INTENTS = 1 << 9  # GUILD_MESSAGES; own bot messages need no privileged content intent
 GATEWAY = "wss://gateway.discord.gg/?v=10&encoding=json"
 PRICE = re.compile(r"[0-9]+(?:\.[0-9]+)?")
 SIDE = re.compile(r"\b(?:1M|5M|15M|30M|1H|4H)\s*[-:]\s*(BUY|SELL)\b", re.I)
@@ -153,7 +153,7 @@ def bot_profile(token: str, channel_id: str) -> str:
     return str(bot["id"])
 
 
-async def gateway_loop(token: str, store: SignalStore, channel_id: str, author_id: str):
+async def gateway_loop(token: str, store: SignalStore, channel_id: str, author_id: str, *, foreign_author: bool = False):
     session = None
     sequence = None
     resume_url = GATEWAY
@@ -186,7 +186,7 @@ async def gateway_loop(token: str, store: SignalStore, channel_id: str, author_i
                     await send(6, {"token": token, "session_id": session, "seq": sequence})
                 else:
                     await send(2, {
-                        "token": token, "intents": GATEWAY_INTENTS,
+                        "token": token, "intents": GATEWAY_INTENTS | ((1 << 15) if foreign_author else 0),
                         "properties": {"os": "linux", "browser": "sktrader",
                                        "device": "sktrader"},
                     })
@@ -259,7 +259,7 @@ def main():
     if not re.fullmatch(r"[0-9]{15,22}", author_id):
         p.error("invalid trusted author id")
     store = SignalStore(args.database, args.output)
-    asyncio.run(gateway_loop(token, store, args.channel_id, author_id))
+    asyncio.run(gateway_loop(token, store, args.channel_id, author_id,\n                             foreign_author=(author_id != bot_id)))
 
 
 if __name__ == "__main__":
