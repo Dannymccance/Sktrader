@@ -46,10 +46,15 @@ resolved=$(timeout 20 docker exec -e WINEPREFIX="$cli_prefix" "$container" \
 [[ -n "$resolved" ]] && docker exec "$container" test -s "$resolved" || {
     echo "Compiler cannot resolve source path. Diagnostics: $stage" >&2; exit 1;
 }
-if ! timeout 180 docker exec -e WINEPREFIX="$cli_prefix" \
+# Wine can return a nonzero MetaEditor exit even after EX5/log are emitted.
+# Require both FRESH output and zero-error, zero-warning log before accepting.
+compiler_rc=0
+timeout 180 docker exec -e WINEPREFIX="$cli_prefix" \
     -w /workspace/AurouxMetaEditor "$container" \
     wine ./MetaEditor64.exe "/compile:$win_source" "/include:$win_include" /log \
-    > "$stage/compile.stdout" 2>&1; then
+    > "$stage/compile.stdout" 2>&1 || compiler_rc=$?
+if [[ "$compiler_rc" == 124 || "$compiler_rc" == 137 ]]; then
+    echo "MetaEditor timeout/forced termination (exit=$compiler_rc)" >&2
     tail -50 "$stage/compile.stdout" >&2
     echo "Compiler diagnostics: $stage" >&2
     exit 1
@@ -86,9 +91,16 @@ if raw.startswith((b"\xff\xfe",b"\xfe\xff")): log=raw.decode("utf-16",errors="re
 elif raw.count(b"\0")>len(raw)//8: log=raw.decode("utf-16-le",errors="replace")
 else: log=raw.decode("utf-8",errors="replace")
 print(log[-1500:])
-if not re.search(r"\b0\s+errors?\b",log,re.I):
-    raise SystemExit("Compiler reported errors or no verifiable success")
+result=re.search(r"\bResult:\s*(\d+)\s+errors?,\s*(\d+)\s+warnings?\b",log,re.I)
+if not result:
+    raise SystemExit("MetaEditor did not report a verifiable errors/warnings summary")
+errors,warnings=map(int,result.groups())
+if errors or warnings:
+    raise SystemExit(f"MetaEditor compilation must be clean: {errors} errors, {warnings} warnings")
 PY
+if [[ "$compiler_rc" -ne 0 ]]; then
+    echo "Wine/MetaEditor exit=$compiler_rc but fresh EX5 and MetaEditor 0 errors/0 warnings were verified."
+fi
 binary="$stage/DiscordLimitUnified.ex5"
 [[ -s "$binary" && "$binary" -nt "$candidate" ]] || {
     echo "Stale or missing compiled EA" >&2; exit 1;
