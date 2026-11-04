@@ -1,0 +1,15 @@
+[Unit]
+Description=DK Capital isolated Discord / MT5 / VNC recovery watchdog
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/sktrader
+ExecStart=/usr/bin/python3 /opt/sktrader/deploy/unified_recovery_vnc5906.py check
+TimeoutStartSec=90
+NoNewPrivileges=true
+UMask=0077
+StandardOutput=journal
+StandardError=journal
