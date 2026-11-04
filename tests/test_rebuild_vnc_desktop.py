@@ -39,7 +39,7 @@ class RebuildVNCSafetyTests(unittest.TestCase):
         self.assertIn("xclip -selection clipboard", s)
         self.assertIn("DISPLAY=:5", s)
         self.assertIn("-localhost yes", s)
-        self.assertIn("-rfbport 5905", s)
+        self.assertIn("-rfbport 5906", s)
         self.assertIn("127", s)
         self.assertIn('read -r -s -p "VNC password: "', s)
         self.assertIn("tigervncpasswd -f", s)
@@ -47,7 +47,7 @@ class RebuildVNCSafetyTests(unittest.TestCase):
 
     def test_retirement_after_new_desktop_verified(self):
         s = SCRIPT.read_text()
-        check = 'echo "NEW desktop :5, port 5905 and X11 clipboard self-test PASSED."'
+        check = 'echo "NEW desktop :5, port 5906 and X11 clipboard self-test PASSED."'
         stop = 'systemctl disable --now "$unit.service"'
         self.assertLess(s.index(check), s.index(stop))
 
