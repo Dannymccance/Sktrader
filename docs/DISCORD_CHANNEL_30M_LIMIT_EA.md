@@ -68,11 +68,19 @@ This service observes one channel and writes files, not broker orders.
 
 ## Install the NEW EA (DEMO MT5 only)
 
-Compile `mt5/DiscordChannelLimit30m.mq5` using the **separate isolated
-MetaEditor** for VNC 5903, then verify zero compilation errors and a fresh
-`DiscordChannelLimit30m.ex5`. This compiler previously failed to generate
-EX5 files under Wine and must be repaired/verified before deployment.
-Installing source alone does not execute an EA.
+Use the dedicated guarded staging command (it does not restart MT5):
+
+```bash
+cd /opt/sktrader
+sudo bash deploy/stage-discord-limit-30m-ea.sh
+```
+
+The script uses the **separate isolated MetaEditor** for VNC 5903, checks
+that the terminal belongs to MetaQuotes-Demo GBP login 5058169035, and
+requires a fresh EX5 plus a log reporting zero compilation errors before
+staging the binary. The isolated compiler previously failed under Wine:
+if it still cannot compile, the script stops without changing the demo EA.
+Installing source or staging the EX5 alone does not execute an EA.
 
 Copy the verified EX5 into the approved DEMO MT5 terminal's `MQL5/Experts`,
 attach **one instance** to that terminal's XAUUSD (or XAUUSD+) chart, and
