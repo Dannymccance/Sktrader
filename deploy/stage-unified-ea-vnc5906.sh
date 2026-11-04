@@ -38,21 +38,29 @@ actual_artifact=$(sha256sum "$artifact" | cut -d' ' -f1)
 [[ "$actual_artifact" == "$artifact_sha" ]] ||
   die "Compiled artifact hash differs from the verified MetaEditor build"
 
-# The launcher uses standard MT5 mode (no /portable). Under Wine, standard
-# data folders live in the user's Roaming/MetaQuotes/Terminal/<instance>/MQL5.
-# Never install into Program Files by guessing: MT5 may not read that copy.
+# MT5 may use a Roaming/MetaQuotes/Terminal/<instance> data folder, OR
+# the installation's own MQL5 directory when running in portable layout.
+# We observed active Bases/Config/logs under the isolated Program Files folder.
+# Locate both kinds, fail closed if ambiguous, never inspect other users' MT5.
 roaming="$prefix/drive_c/users/$user/AppData/Roaming/MetaQuotes/Terminal"
-[[ -d "$roaming" ]] ||
-  die "Roaming terminal data folder missing. In MT5 choose File > Open Data Folder"
-mapfile -d '' -t experts_dirs < <(
-  find "$roaming" -mindepth 3 -maxdepth 4 -type d \
-    -path "$roaming/*/MQL5/Experts" -print0
-)
-
+experts_dirs=()
+if [[ -d "$roaming" ]]; then
+  mapfile -d '' -t experts_dirs < <(
+    find "$roaming" -mindepth 3 -maxdepth 3 -type d \
+      -path "$roaming/*/MQL5/Experts" -print0
+  )
+fi
+portable_experts="$program/MQL5/Experts"
+if [[ -d "$portable_experts" && -d "$program/Config" &&
+      -d "$program/Bases" && -d "$program/logs" ]]; then
+  experts_dirs+=("$portable_experts")
+fi
+echo "Discovered isolated terminal Experts folders: ${#experts_dirs[@]}"
+if (( ${#experts_dirs[@]} )); then
+  printf '  %s\n' "${experts_dirs[@]}"
+fi
 if (( ${#experts_dirs[@]} != 1 )); then
-  echo "Discovered MT5 Experts folders: ${#experts_dirs[@]}"
-  if (( ${#experts_dirs[@]} )); then printf '  %s\n' "${experts_dirs[@]}"; fi
-  die "Cannot identify exactly one MT5 data folder; use File > Open Data Folder in MT5"
+  die "MT5 data directory ambiguous/missing; verify using File > Open Data Folder in MT5"
 fi
 experts="${experts_dirs[0]}"
 resolved_prefix=$(realpath -e "$prefix")

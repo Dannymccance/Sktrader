@@ -22,11 +22,13 @@ sudo bash deploy/stage-unified-ea-vnc5906.sh stage
 ```
 
 The staging script validates the exact source and EX5 SHA256, confirms
-the dedicated localhost VNC 5906 service, finds a single MT5 data folder
-under the isolated Wine user's roaming profile, and stages only the
-`DiscordLimitUnified.ex5` binary. If zero or multiple folders exist,
-it exits safely. In that case choose **File > Open Data Folder** in the
-running MT5, identify the correct folder, and investigate before staging.
+the dedicated localhost VNC 5906 service, finds exactly one MT5 data folder in either the isolated Wine user's
+Roaming profile or the verified portable-style installation folder
+`/var/lib/dkcapital-desktop/.wine-mt5/drive_c/Program Files/MetaTrader 5/MQL5/Experts`,
+and stages only the `DiscordLimitUnified.ex5` binary. The portable
+folder is accepted only when the same installation also has
+`Config`, `Bases` and `logs` directories. If zero or multiple
+candidate folders exist, it exits safely. In that case choose **File > Open Data Folder** in the running MT5, identify the correct folder, and investigate before staging.
 It refuses to replace a different file with the same name.
 
 In the running VNC MT5 terminal: Navigator > Expert Advisors > Refresh.
