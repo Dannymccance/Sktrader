@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import json
 import logging
 import math
@@ -88,8 +89,17 @@ def extract_signal(message: dict, *, channel_id: str, author_id: str | set[str] 
     price = float(pois[0])
     if not math.isfinite(price) or price <= 0:
         return None
-    # Use the exact POI provided. EA will refuse entries off the broker tick grid.
-    return (msg_id, matches[0].upper(), pois[0], created // 1000,
+    # The connected MetaQuotes-Demo XAUUSD contract quotes in cents. User
+    # explicitly requested converting incoming 5-decimal scanner POIs to .xx.
+    # Decimal avoids binary-float rounding surprises at half-cent boundaries.
+    # The EA still independently validates the actual broker tick grid.
+    try:
+        rounded = Decimal(pois[0]).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    except InvalidOperation:
+        return None
+    if rounded <= 0:
+        return None
+    return (msg_id, matches[0].upper(), format(rounded, ".2f"), created // 1000,
             created // 1000 + LIFETIME_SECONDS)
 
 
