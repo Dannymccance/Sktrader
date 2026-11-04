@@ -275,7 +275,11 @@ void OnTimer() {
    // Order placement ALWAYS executes first. Telemetry cannot preempt this step.
    ReadAndProcess(!EnableNewEntries);
    ulong now=GetTickCount64();
-   if(telemetryUrgent || lastBrokerTelemetryMs==0 ||
+   // Trade transaction bursts can produce multiple callbacks. Coalesce
+   // urgent broker exports to avoid expensive repeated history scans.
+   if((telemetryUrgent && (lastBrokerTelemetryMs==0 ||
+       now-lastBrokerTelemetryMs>=500)) ||
+      lastBrokerTelemetryMs==0 ||
       now-lastBrokerTelemetryMs>=(ulong)BrokerTelemetrySeconds*1000) {
       lastBrokerTelemetryMs=now;
       telemetryUrgent=false;
