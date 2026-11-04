@@ -22,6 +22,15 @@ sudo bash deploy/setup-discord-limit-vnc5906.sh prepare-monitor
 sudo bash deploy/setup-discord-limit-vnc5906.sh status
 ```
 
+The monitor uses a dedicated Python virtual environment at
+`/var/lib/dkcapital-desktop/.venv-discord-limit`. The installer creates it
+as `dkvnc` and installs only `websockets>=14,<17`, matching the project's
+existing Python dependency declaration. The shared `/opt/sktrader/.venv`
+used by existing scanner services is **not modified**. If the VPS Python
+lacks the `venv` module or internet package access, the script exits
+without installing the monitor; inspect the error before changing host
+packages.
+
 The install uses the pre-existing secure token file at
 `/var/lib/dkcapital-mt5-3/.local/share/sktrader/discord-bot-token`
 if present and copies it into `dkvnc`'s private file, without printing
