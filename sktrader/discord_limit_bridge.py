@@ -124,6 +124,8 @@ class SignalStore:
         receipt = int(time.time() * 1000) if now_ms is None else now_ms
         if receipt >= expires * 1000:
             return False
+        if self.max_input_age_sec and receipt // 1000 - issued > self.max_input_age_sec:
+            return False
         with self.con:
             cur = self.con.execute(
                 "INSERT OR IGNORE INTO limit_messages VALUES(?,?,?,?,?,?)",
