@@ -14,6 +14,26 @@ only these previously verified authors:
 - DK Capital app bot `1554225452091048017` (historical scanner feed).
 - Danny `508740193369587722` (manually posted test signals).
 
+Every new eligible XAUUSD signal has its **POI rounded to two decimal
+places before writing the MT5 CSV**. This was explicitly requested after
+the EA rejected `4167.52875` as off-grid on MetaQuotes-Demo. For example,
+`4167.52875 -> 4167.53` and `3067.52875 -> 3067.53`. The bridge uses
+decimal ROUND_HALF_UP so half-cent cases are deterministic. Original
+Discord messages are unchanged. The EA independently checks the broker
+tick grid; its $7.50 adverse SL, $15 favourable TP, 4% balance risk,
+30-minute expiry and order direction are unchanged. A broker with a
+coarser tick grid may still reject a two-decimal price.
+
+**Deployment after the two-decimal fix:** run
+`cd /opt/sktrader && git pull --ff-only origin main`, then
+`sudo systemctl restart sktrader-discord-limit-live.service`.
+The service retains its production database and cutover timestamp.
+**Do not rerun `stage` or `start`**, which deliberately refuse an
+existing live database/service. Previously received signal IDs are
+not re-sent or repriced; send a **fresh** new signal to test. The
+monitor service can be restarted separately if desired, but it does
+not write to MT5.
+
 Every other author and channel is ignored. The bot's Message Content
 Intent has already been enabled, as confirmed by successful Gateway
 connections with the human author, but it must remain enabled.
