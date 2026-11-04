@@ -54,6 +54,33 @@ class DiscordLimitBridgeTests(unittest.TestCase):
         self.assertEqual(signal[4]-signal[3], LIFETIME_SECONDS)
         self.assertEqual(message_time_ms(signal[0]), self.now_ms-500)
 
+    def test_both_trusted_authors_without_untrusted_users(self):
+        bot_id = "1554225452091048017"
+        human_id = "508740193369587722"
+        authors = {bot_id, human_id}
+        self.message["author"]["id"] = bot_id
+        self.assertIsNotNone(extract_signal(self.message, channel_id=CHANNEL_ID,
+                                            author_id=authors, now_ms=self.now_ms))
+        self.message["author"]["id"] = human_id
+        self.message["author"]["bot"] = False
+        self.assertIsNotNone(extract_signal(self.message, channel_id=CHANNEL_ID,
+                                            author_id=authors, now_ms=self.now_ms))
+        self.message["author"]["id"] = "123456789012345678"
+        self.assertIsNone(extract_signal(self.message, channel_id=CHANNEL_ID,
+                                         author_id=authors, now_ms=self.now_ms))
+
+    def test_live_cutover_never_replays_monitor_messages(self):
+        authors = {"508740193369587722"}
+        self.message["author"]["id"] = "508740193369587722"
+        # This previously captured message remains within its 30-minute TTL
+        # but is still excluded because it predates the LIVE cutover.
+        self.assertIsNone(extract_signal(
+            self.message, channel_id=CHANNEL_ID, author_id=authors,
+            now_ms=self.now_ms, not_before_ms=self.now_ms))
+        self.assertIsNotNone(extract_signal(
+            self.message, channel_id=CHANNEL_ID, author_id=authors,
+            now_ms=self.now_ms, not_before_ms=self.now_ms-600))
+
     def test_old_message_fails_closed(self):
         self.message["id"] = snowflake(self.now_ms - 1800_001)
         self.assertIsNone(extract_signal(self.message, channel_id=CHANNEL_ID,
