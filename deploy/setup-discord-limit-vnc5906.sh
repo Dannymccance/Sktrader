@@ -23,7 +23,8 @@ private="$home/.local/share/sktrader"
 token="$private/discord-bot-token"
 output="$private/discord-limit-monitor.csv"
 db="$private/discord-limit-monitor.db"
-python=/opt/sktrader/.venv/bin/python
+venv="$home/.venv-discord-limit"
+python="$venv/bin/python"
 channel=1565527578163552327
 
 die() { echo "ERROR: $*" >&2; exit 1; }
@@ -41,12 +42,16 @@ inspect() {
       echo "MISSING $path"
     fi
   done
-  echo "===== BRIDGE PYTHON ====="
+  echo "===== ISOLATED BRIDGE PYTHON ====="
   if [[ -x "$python" ]]; then
-    "$python" -c 'import websockets, sktrader.discord_limit_bridge; print("Discord bridge dependencies OK")' ||
-      echo "Python dependencies could not be loaded"
+    if runuser -u "$user" -- env HOME="$home" PYTHONPATH=/opt/sktrader \
+      "$python" -c 'import websockets, sktrader.discord_limit_bridge; print("Isolated Discord bridge dependencies OK", websockets.__version__)'; then
+      :
+    else
+      echo "Isolated Python dependencies could not be loaded"
+    fi
   else
-    echo "Missing Python venv: $python"
+    echo "Dedicated Discord bridge virtualenv not yet created: $python"
   fi
   echo "===== SERVICES ====="
   for name in "$service" "$existing_service" sktrader.service; do
@@ -78,11 +83,28 @@ systemctl is-active --quiet dkcapital-desktop-vnc.service ||
 [[ "$(getent passwd "$user" | cut -d: -f6)" == "$home" ]] ||
   die "Wrong dkvnc home"
 [[ -d "$mt5common" ]] || die "New MT5 Common/Files directory missing"
-[[ -x "$python" ]] || die "Missing Sktrader Python virtualenv"
-"$python" -c 'import websockets, sktrader.discord_limit_bridge' ||
-  die "Discord listener Python dependencies missing"
 [[ -f /opt/sktrader/sktrader/discord_limit_bridge.py ]] ||
   die "Discord bridge source missing"
+command -v python3 >/dev/null || die "System Python 3 missing"
+if [[ -e "$venv" ]]; then
+  [[ ! -L "$venv" && -d "$venv" ]] || die "Isolated Python virtualenv path is not a directory"
+  [[ "$(stat -c %u "$venv")" == "$(id -u "$user")" ]] ||
+    die "Existing isolated Python virtualenv owned by another account"
+else
+  echo "===== CREATE NEW ISOLATED DISCORD PYTHON ENVIRONMENT ====="
+  if ! runuser -u "$user" -- env HOME="$home" python3 -m venv "$venv"; then
+    die "Python venv creation failed; check python3-venv. Existing Sktrader venv is unchanged"
+  fi
+fi
+[[ -x "$python" ]] || die "Dedicated Discord Python executable missing: $python"
+echo "===== INSTALL ONLY WEBSOCKETS IN DEDICATED ENVIRONMENT ====="
+runuser -u "$user" -- env HOME="$home" \
+  "$python" -m pip install --disable-pip-version-check --no-cache-dir --no-input \
+  'websockets>=14,<17' ||
+  die "Cannot install websockets into isolated virtualenv"
+runuser -u "$user" -- env HOME="$home" PYTHONPATH=/opt/sktrader \
+  "$python" -c 'import websockets, sktrader.discord_limit_bridge; print("Isolated bridge ready, websockets", websockets.__version__)' ||
+  die "Discord bridge dependencies still unavailable in isolated virtualenv"
 if [[ -e "$unit" || -L "$unit" ]]; then
   die "Monitor unit already exists. Refusing overwrite"
 fi
@@ -139,7 +161,7 @@ Group=dkvnc
 WorkingDirectory=/opt/sktrader
 Environment=HOME=/var/lib/dkcapital-desktop
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/opt/sktrader/.venv/bin/python -u -m sktrader.discord_limit_bridge --channel-id 1565527578163552327 --token-file /var/lib/dkcapital-desktop/.local/share/sktrader/discord-bot-token --database /var/lib/dkcapital-desktop/.local/share/sktrader/discord-limit-monitor.db --output /var/lib/dkcapital-desktop/.local/share/sktrader/discord-limit-monitor.csv
+ExecStart=/var/lib/dkcapital-desktop/.venv-discord-limit/bin/python -u -m sktrader.discord_limit_bridge --channel-id 1565527578163552327 --token-file /var/lib/dkcapital-desktop/.local/share/sktrader/discord-bot-token --database /var/lib/dkcapital-desktop/.local/share/sktrader/discord-limit-monitor.db --output /var/lib/dkcapital-desktop/.local/share/sktrader/discord-limit-monitor.csv
 Restart=always
 RestartSec=5
 NoNewPrivileges=true
