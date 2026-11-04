@@ -19,8 +19,8 @@ status() {
   echo "===== COMPILER VNC (PRESERVED) ====="
   docker ps -a --filter "name=^/$COMPILER$" \
     --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' || true
-  echo "===== VNC PORTS ====="
-  ss -lntp | grep -E ':59[0-9][0-9]([[:space:]]|$)' || true
+  echo "===== VNC PORTS (CHECK EXISTING 5905 CONFLICT) ====="
+  ss -lntp | grep -E ':(5901|5902|5903|5904|5905|5906)([[:space:]]|$)' || true
   echo "===== MT5 (NOT MANAGED BY THIS SCRIPT) ====="
   for name in dkcapital-mt5-1 dkcapital-mt5-2 dkcapital-mt5-3 sktrader-display; do
     printf '%s: ' "$name"
@@ -39,7 +39,7 @@ command -v docker >/dev/null || die "Docker missing; cannot verify compiler"
   die "Compiler VNC is not running; refusing cleanup"
 [[ ! -e "$NEW_UNIT" ]] || die "New VNC service already installed; refusing overwrite"
 [[ ! -S /tmp/.X11-unix/X5 ]] || die "X display :5 already occupied"
-ss -lnt | grep -Eq ':5905[[:space:]]' && die "Port 5905 occupied"
+ss -lnt | grep -Eq ':5906[[:space:]]' && die "Port 5906 occupied"
 
 # Do not disable unfamiliar services that happen to have similar names.
 for line in "dkcapital-vnc1 5901 :150" "dkcapital-vnc2 5902 :151" "dkcapital-vnc3 5904 :152"; do
@@ -59,8 +59,8 @@ apt-get update -qq
 apt-get install -y --no-install-recommends \
   tigervnc-standalone-server tigervnc-common tigervnc-tools \
   xfce4-session xfwm4 xfce4-panel xfdesktop4 xfce4-settings \
-  xfce4-terminal thunar dbus-x11 autocutsel xclip xauth
-for cmd in tigervncserver tigervncpasswd tigervncconfig autocutsel startxfce4 xclip; do
+  xfce4-terminal thunar dbus-x11 xterm autocutsel xclip xauth
+for cmd in tigervncserver tigervncpasswd tigervncconfig autocutsel xfce4-session xterm xclip; do
   command -v "$cmd" >/dev/null || die "Missing required program $cmd"
 done
 
@@ -91,7 +91,11 @@ export XDG_CURRENT_DESKTOP=XFCE
 /usr/bin/tigervncconfig -nowin &
 /usr/bin/autocutsel -fork -selection CLIPBOARD
 /usr/bin/autocutsel -fork -selection PRIMARY
-exec /usr/bin/dbus-run-session -- /usr/bin/startxfce4
+# VNC starts the X11 server: launch XFCE session directly.
+/usr/bin/xterm -title "DK Capital clipboard desktop" -geometry 110x35+55+55 &
+/usr/bin/dbus-run-session -- /usr/bin/xfce4-session >> "$HOME/.vnc/xfce-session.log" 2>&1
+# Preserve a visible terminal even if XFCE exits.
+exec /usr/bin/xterm -title "XFCE stopped - check ~/.vnc/xfce-session.log"
 STARTUP
 chown "$NEW_USER:$NEW_USER" "$NEW_HOME/.vnc/xstartup"
 chmod 0700 "$NEW_HOME/.vnc/xstartup"
@@ -108,7 +112,7 @@ User=dkvnc
 Group=dkvnc
 WorkingDirectory=/var/lib/dkcapital-desktop
 Environment=HOME=/var/lib/dkcapital-desktop
-ExecStart=/usr/bin/tigervncserver -fg :5 -rfbport 5905 -localhost yes -SecurityTypes VncAuth -PasswordFile /var/lib/dkcapital-desktop/.vnc/passwd -geometry 1920x1080 -depth 24 -xstartup /var/lib/dkcapital-desktop/.vnc/xstartup
+ExecStart=/usr/bin/tigervncserver -fg :5 -rfbport 5906 -localhost yes -SecurityTypes VncAuth -PasswordFile /var/lib/dkcapital-desktop/.vnc/passwd -geometry 1920x1080 -depth 24 -xstartup /var/lib/dkcapital-desktop/.vnc/xstartup
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
@@ -125,14 +129,17 @@ systemctl is-active --quiet dkcapital-desktop-vnc.service || {
   journalctl -u dkcapital-desktop-vnc -n 40 --no-pager
   die "New desktop failed; legacy VNC services remain unchanged"
 }
-ss -lnt | grep -Eq '127\.0\.0\.1:5905[[:space:]]' ||
-  die "New desktop is not on localhost:5905; old services remain unchanged"
+ss -lnt | grep -Eq '127\.0\.0\.1:5906[[:space:]]' ||
+  die "New desktop is not on localhost:5906; old services remain unchanged"
+if ss -lnt | grep -Eq '(^|[[:space:]])(0\.0\.0\.0|\*|\[::\]):5906[[:space:]]'; then
+  die "New desktop is listening publicly; old VNC services remain unchanged"
+fi
 if ! timeout 10 runuser -u "$NEW_USER" -- env HOME="$NEW_HOME" DISPLAY=:5 \
   sh -c 'printf DK_VNC_CLIPBOARD_OK | xclip -selection clipboard &&
          test "$(xclip -o -selection clipboard)" = DK_VNC_CLIPBOARD_OK'; then
   die "New clipboard self-test failed; legacy services remain unchanged"
 fi
-echo "NEW desktop :5, port 5905 and X11 clipboard self-test PASSED."
+echo "NEW desktop :5, port 5906 and X11 clipboard self-test PASSED."
 
 # Only after the new desktop has started and passed its clipboard self-test.
 backup="/root/old-vnc-services-$(date -u +%Y%m%dT%H%M%SZ)"
