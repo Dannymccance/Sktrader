@@ -638,6 +638,8 @@ def watch(config: Config) -> None:
             last_selector = None
             last_reload = 0.0
             last_login = 0.0
+            last_age_warning = 0.0
+            last_age_refresh = 0.0
             # Require two consecutive complete, identical fingerprints before
             # accepting that JIFU has genuinely replaced the visible feed.
             gap_candidate = None
@@ -666,7 +668,24 @@ def watch(config: Config) -> None:
                     if selector != "unselected":
                         raise SnapshotError("Mixed-scanner Alerts feed not selected")
                     cards = _read_feed_cards(page)
-                    feed_age.observe(cards)
+                    # JIFU sometimes leaves a visible relative-age label frozen
+                    # ("just now", "6 minutes ago") while React continues
+                    # rendering valid new alert cards. A static UI label alone
+                    # must not block SQLite snapshot reconciliation/delivery.
+                    age_stale = False
+                    try:
+                        feed_age.observe(cards, now=started)
+                    except SnapshotError as age_exc:
+                        if not str(age_exc).startswith("JIFU feed age stopped updating:"):
+                            raise
+                        age_stale = True
+                        if started - last_age_warning >= 300:
+                            LOG.warning(
+                                "JIFU relative age label stalled; checking valid "
+                                "scanner cards anyway (no signal cursor reset): %s",
+                                str(age_exc)[:180],
+                            )
+                            last_age_warning = started
                     try:
                         new_count, baseline = store.observe(cards, allow_newest_only=True)
                         gap_candidate = None
@@ -704,6 +723,24 @@ def watch(config: Config) -> None:
                         last_coverage_log = started
                     failures = 0
                     health.healthy()
+                    # Refresh only after processing/delivering a valid snapshot.
+                    # An unchanged relative-age string is weak evidence of a
+                    # frozen page: use a bounded, infrequent refresh rather than
+                    # treating every subsequent poll as a failure.
+                    if (age_stale and feed_age.last_age_change is not None
+                            and started - feed_age.last_age_change >= 600
+                            and started - last_age_refresh >= 600):
+                        last_age_refresh = started
+                        last_reload = started  # avoid a second reload on React hydration
+                        LOG.warning(
+                            "JIFU age label remains unchanged after 10 minutes; "
+                            "refreshing dashboard after processing valid cards "
+                            "(SQLite cursor retained)"
+                        )
+                        page.goto(config.url, wait_until="domcontentloaded", timeout=45000)
+                        _prepare_page(page)
+                        last_selector = None
+                        feed_age = FeedAgeWatchdog()
                 except Exception as exc:
                     failures += 1
                     reason = f"{type(exc).__name__}: {str(exc)[:190]}"
