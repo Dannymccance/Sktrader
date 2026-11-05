@@ -83,6 +83,39 @@ class RecoveryTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "no readable relative age"):
             watcher.observe(["AUROUX XAUUSD 5M - BUY Point of Interest 4000"], now=1101)
 
+    def test_new_alert_identity_recovers_from_stale_just_now(self):
+        from sktrader.core import SnapshotError
+        watcher = FeedAgeWatchdog()
+        first = "SNIPER PRO just now XAUUSD 5M - SELL Point of Interest 4120.00"
+        second = "SNIPER PRO just now XAUUSD 5M - SELL Point of Interest 4121.00"
+        watcher.observe([first], now=100)
+        with self.assertRaisesRegex(SnapshotError, "stopped updating"):
+            watcher.observe([first], now=221)
+        # A real new card remains detectable despite a stuck age string.
+        watcher.observe([second, first], now=222)
+        self.assertEqual(watcher.last_age_change, 222)
+        watcher.observe([second, first], now=340)
+
+    def test_watcher_age_stalls_do_not_block_valid_card_delivery(self):
+        source = (Path(__file__).resolve().parents[1] /
+                  "sktrader" / "watcher.py").read_text()
+        self.assertIn("age_stale = False", source)
+        self.assertIn('if not str(age_exc).startswith("JIFU feed age stopped updating:"):', source)
+        self.assertIn("age_stale = True", source)
+        self.assertIn("store.observe(cards, allow_newest_only=True)", source)
+        self.assertLess(source.index("feed_age.observe(cards, now=started)"),
+                        source.index("store.observe(cards, allow_newest_only=True)"))
+        self.assertLess(source.index("age_stale = True"),
+                        source.index("store.observe(cards, allow_newest_only=True)"))
+        self.assertIn('started - feed_age.last_age_change >= 600', source)
+        self.assertIn('started - last_age_refresh >= 600', source)
+        self.assertIn("last_reload = started  # avoid a second reload on React hydration", source)
+        self.assertIn("_send_scanner_pending(store, config, channels)", source)
+        self.assertLess(source.index("store.observe(cards, allow_newest_only=True)"),
+                        source.index('if (age_stale and feed_age.last_age_change is not None'))
+        self.assertIn("if not slots or not slots[0]:", source)
+        self.assertIn("Newest visible JIFU alert cannot be extracted", source)
+
     def test_username_login_in_same_form(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "login.json"
