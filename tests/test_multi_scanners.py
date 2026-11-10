@@ -536,10 +536,12 @@ class MultiScannerTests(unittest.TestCase):
                  patch("sktrader.watcher._post_discord") as posting:
                 _send_scanner_pending(store, config, channels)
             ensure.assert_called_once_with("mock-token", gold_channel, "US30USD")
-            posted = {call.args[1]["embeds"][0]["description"].split("**")[1]: call.kwargs["channel_id"]
-                      for call in posting.call_args_list}
-            self.assertEqual(posted["US30USD"], dedicated_channel)
-            self.assertEqual(posted["XAUUSD"], gold_channel)
+            posted = [(call.args[1]["embeds"][0]["description"], call.kwargs["channel_id"])
+                      for call in posting.call_args_list]
+            self.assertTrue(any("**US30USD**" in desc and target == dedicated_channel
+                                for desc, target in posted))
+            self.assertTrue(any("**XAUUSD**" in desc and target == gold_channel
+                                for desc, target in posted))
             self.assertEqual(posting.call_count, 3)
             self.assertEqual(store.pending(), [])
             store.conn.close()
