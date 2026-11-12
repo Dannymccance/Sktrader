@@ -10,7 +10,7 @@ import stat
 import time
 import urllib.error
 import urllib.request
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -799,7 +799,11 @@ def main() -> None:
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     config = Config.from_env(require_discord=args.command in {"watch", "replay-visible", "setup-channels", "setup-sniper-channels"})
-    with _one_browser_at_a_time(config.profile):
+    # Discord-only channel provisioning does not use the Chromium profile.
+    # It is safe to run while the existing watcher holds the browser lock.
+    browser_guard = (nullcontext() if args.command == "setup-sniper-channels"
+                     else _one_browser_at_a_time(config.profile))
+    with browser_guard:
         if args.command == "setup-channels":
             channels = setup_channels(
                 _bot_token(config.bot_token_file),
