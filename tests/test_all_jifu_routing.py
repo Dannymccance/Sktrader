@@ -114,7 +114,7 @@ class CatchallTests(unittest.TestCase):
             destinations = {}
             for called in posted.call_args_list:
                 fields = called.args[1]["embeds"][0]
-                destinations[(fields["title"], fields["description"].split("**")[1])] = called.kwargs["channel_id"]
+                destinations[(fields["title"], fields["description"].split("\n\n**")[1].split("**")[0])] = called.kwargs["channel_id"]
             self.assertEqual(destinations[("SNIPER PRO", "XAUUSD")], gold_channel)
             self.assertEqual(destinations[("AUROUX", "XAUUSD")], channels["AUROUX"])
             self.assertEqual(destinations[("SNIPER PRO", "BTCUSDT")], dedicated_channel)
