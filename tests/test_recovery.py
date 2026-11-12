@@ -110,7 +110,7 @@ class RecoveryTests(unittest.TestCase):
         self.assertIn('started - feed_age.last_age_change >= 600', source)
         self.assertIn('started - last_age_refresh >= 600', source)
         self.assertIn("last_reload = started  # avoid a second reload on React hydration", source)
-        self.assertIn("_send_scanner_pending(store, config, channels)", source)
+        self.assertIn("_send_scanner_pending(store, config, channels, sniper_symbol_channels)", source)
         self.assertLess(source.index("store.observe(cards, allow_newest_only=True)"),
                         source.index('if (age_stale and feed_age.last_age_change is not None'))
         self.assertIn("if not slots or not slots[0]:", source)

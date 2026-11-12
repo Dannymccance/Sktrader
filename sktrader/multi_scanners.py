@@ -1,4 +1,4 @@
-"""Watch-only XAUUSD signals from every JIFU scanner with independent routing."""
+"""Watch-only JIFU signals: XAUUSD for all scanners, all markets for Sniper Pro."""
 from __future__ import annotations
 
 import json
@@ -69,18 +69,28 @@ def is_xauusd_card(text: str) -> bool:
     return bool(re.search(r"\bXAUUSD\b(?![A-Za-z0-9.])", text, re.I))
 
 
+def is_sniper_pro_card(text: str) -> bool:
+    """Recognise Sniper Pro cards before parsing so malformed ones fail closed."""
+    return bool(re.match(r"^\s*SNIPER\s*PRO(?=\s)", text, re.I))
+
+
+def is_monitored_card(text: str) -> bool:
+    return is_xauusd_card(text) or is_sniper_pro_card(text)
+
+
 def parse_scanner_card(text: str) -> ScannerSignal:
     """Preserve exactly the fields this scanner displayed, never invent exits."""
     compact = re.sub(r"\s+", " ", text.strip())
     match = HEADER.fullmatch(compact)
     if not match:
         raise AlertError("Invalid scanner signal header")
-    if match["symbol"].upper() != "XAUUSD":
-        raise AlertError("Non-XAUUSD scanner signal")
     source = re.sub(r"\s+SCANNER$", "", match["scanner"].strip().upper())
     scanner = SCANNER_ALIASES.get(source)
     if scanner not in SCANNER_CHANNELS:
-        raise AlertError("Unconfigured XAUUSD scanner")
+        raise AlertError("Unconfigured scanner")
+    symbol = match["symbol"].upper()
+    if symbol != "XAUUSD" and scanner != "SNIPER PRO":
+        raise AlertError("Non-XAUUSD scanner signal")
     body = match["body"]
     tokens = list(LABELS.finditer(body))
     if not tokens or tokens[0].start() != 0:
@@ -97,7 +107,7 @@ def parse_scanner_card(text: str) -> ScannerSignal:
     if not any(x["name"].lower() == "point of interest" for x in fields):
         raise AlertError("Point of Interest missing")
     return ScannerSignal(
-        scanner, "XAUUSD", match["timeframe"].upper(),
+        scanner, symbol, match["timeframe"].upper(),
         match["side"].upper(), match["age"], fields,
     )
 
@@ -168,7 +178,7 @@ def _prefix_with_skipped_older_cards(previous: list[str], current: list[str]) ->
 
 
 class ScannerStore:
-    """Separate XAUUSD mixed-feed state from prior Auroux-only SQLite history."""
+    """Separate monitored mixed-feed state from prior Auroux-only history."""
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(path))
@@ -235,11 +245,11 @@ class ScannerStore:
         eligible = []
         now = datetime.now(timezone.utc).isoformat()
         for i in reversed(new_indices):
-            if is_xauusd_card(cards[i]):
+            if is_monitored_card(cards[i]):
                 try:
                     eligible.append(replace(parse_scanner_card(cards[i]), observed_at=now))
                 except AlertError as exc:
-                    raise SnapshotError("Unparseable new XAUUSD scanner signal") from exc
+                    raise SnapshotError("Unparseable new monitored scanner signal") from exc
         observed_scanners = set()
         for card in cards:
             heading = re.sub(r"\s+", " ", card.strip()).upper()
@@ -299,11 +309,11 @@ class ScannerStore:
         eligible = []
         now = datetime.now(timezone.utc).isoformat()
         for card in reversed(cards):
-            if is_xauusd_card(card):
+            if is_monitored_card(card):
                 try:
                     eligible.append(replace(parse_scanner_card(card), observed_at=now))
                 except AlertError as exc:
-                    raise SnapshotError("Unparseable historical XAUUSD scanner card") from exc
+                    raise SnapshotError("Unparseable historical monitored scanner card") from exc
         current = [feed_fingerprint(card) for card in newest]
         with self.conn:
             for signal in eligible:
@@ -470,3 +480,47 @@ def setup_channels(token: str, auroux_channel: int, mapping_path: Path) -> dict[
         if staging.exists():
             staging.unlink()
     return {scanner: int(channel_id) for scanner, channel_id in mapping.items()}
+
+
+def ensure_sniper_symbol_channel(token: str, anchor_channel_id: int, symbol: str) -> int:
+    """Find/create a Sniper Pro instrument channel beside the existing gold one.
+
+    Only Sniper Pro non-gold signals call this. An existing channel is reused.
+    Discord permission or API failures leave the SQLite outbox undelivered.
+    """
+    symbol = symbol.upper()
+    if symbol == "XAUUSD":
+        return anchor_channel_id
+    if not re.fullmatch(r"[A-Z][A-Z0-9.]{1,19}", symbol):
+        raise ValueError("Invalid Sniper Pro instrument symbol")
+    name = "sniper-pro-" + symbol.lower().replace(".", "-") + "-signals"
+    anchor = _discord_json(token, "GET", f"/channels/{anchor_channel_id}")
+    guild_id = str(anchor.get("guild_id", ""))
+    category_id = anchor.get("parent_id")
+    if (anchor.get("name") != "sniper-pro-signals" or anchor.get("type") != 0
+            or not SNOWFLAKE.fullmatch(guild_id) or not category_id):
+        raise ValueError("Sniper Pro source channel is missing or not in a category")
+    channels = _discord_json(token, "GET", f"/guilds/{guild_id}/channels")
+    if not isinstance(channels, list):
+        raise ValueError("Invalid Discord channel list")
+    matches = [ch for ch in channels if ch.get("name") == name
+               and ch.get("parent_id") == category_id and ch.get("type") == 0]
+    if len(matches) > 1:
+        raise ValueError(f"Ambiguous Discord destination #{name}")
+    if matches:
+        channel_id = str(matches[0].get("id", ""))
+    else:
+        created = _discord_json(token, "POST", f"/guilds/{guild_id}/channels", {
+            "name": name,
+            "type": 0,
+            "parent_id": category_id,
+            "topic": f"JIFU Sniper Pro {symbol} alerts. Watch-only; no MT5 trading.",
+        })
+        if (not isinstance(created, dict) or created.get("name") != name
+                or created.get("type") != 0
+                or created.get("parent_id") != category_id):
+            raise ValueError(f"Discord did not confirm new channel #{name}")
+        channel_id = str(created.get("id", ""))
+    if not SNOWFLAKE.fullmatch(channel_id):
+        raise ValueError(f"Invalid destination channel ID for #{name}")
+    return int(channel_id)

@@ -17,8 +17,8 @@ from pathlib import Path
 from sktrader.core import Alert, AlertError, EventStore, SnapshotError, auroux_xauusd_card, merge_history_page, parse_card, feed_fingerprint
 
 from sktrader.multi_scanners import (
-    SCANNER_CHANNELS, ScannerStore, discord_card, is_xauusd_card,
-    load_channels, setup_channels,
+    SCANNER_CHANNELS, ScannerStore, discord_card, is_xauusd_card, is_monitored_card,
+    ensure_sniper_symbol_channel, load_channels, setup_channels,
 )
 
 LOG = logging.getLogger("sktrader")
@@ -430,16 +430,32 @@ def _scanner_channel_map(config: Config) -> dict[str, int]:
                          config.discord_channel_id)
 
 
-def _send_scanner_pending(store: ScannerStore, config: Config, channels: dict[str, int]) -> None:
+def _send_scanner_pending(
+    store: ScannerStore, config: Config, channels: dict[str, int],
+    sniper_symbol_channels: dict[str, int] | None = None,
+) -> None:
+    """Route only gold to existing scanner channels; other Sniper Pro markets elsewhere."""
+    if sniper_symbol_channels is None:
+        sniper_symbol_channels = {}
     for event_id, signal in store.pending():
-        # Never route a non-XAUUSD signal, even if an unexpected DB row exists.
-        if signal.symbol != "XAUUSD" or signal.scanner not in channels:
-            raise SnapshotError("Non-XAUUSD or unmapped scanner signal in outbox")
+        if signal.scanner not in channels:
+            raise SnapshotError("Unmapped scanner signal in outbox")
+        if signal.symbol == "XAUUSD":
+            destination = channels[signal.scanner]
+        elif signal.scanner == "SNIPER PRO":
+            destination = sniper_symbol_channels.get(signal.symbol)
+            if destination is None:
+                destination = ensure_sniper_symbol_channel(
+                    _bot_token(config.bot_token_file), channels["SNIPER PRO"], signal.symbol,
+                )
+                sniper_symbol_channels[signal.symbol] = destination
+        else:
+            raise SnapshotError("Non-gold signal from non-Sniper scanner in outbox")
         _post_discord(config, discord_card(signal), event_id=event_id,
-                      channel_id=channels[signal.scanner])
+                      channel_id=destination)
         store.delivered(event_id)
-        LOG.info("Delivered scanner signal #%s from %s to mapped Discord channel",
-                 event_id, signal.scanner)
+        LOG.info("Delivered scanner signal #%s from %s (%s) to Discord channel %s",
+                 event_id, signal.scanner, signal.symbol, destination)
 
 
 def _send_pending(store: EventStore, config: Config) -> None:
@@ -562,6 +578,7 @@ def replay_visible(config: Config) -> None:
     _bot_token(config.bot_token_file)
     store = ScannerStore(config.database)
     channels = _scanner_channel_map(config)
+    sniper_symbol_channels: dict[str, int] = {}
     with sync_playwright() as playwright:
         viewport, args = browser_geometry()
         context = playwright.chromium.launch_persistent_context(
@@ -588,19 +605,19 @@ def replay_visible(config: Config) -> None:
                 )
             count, already_run = store.replay_once(cards, newest=latest)
             if already_run:
-                print("Historical XAUUSD scanner replay already queued; no duplicate batch created.")
+                print("Historical scanner replay already queued; no duplicate batch created.")
             elif count == 0:
                 print(
-                    f"Found {len(cards)} JIFU cards, but zero XAUUSD cards. "
+                    f"Found {len(cards)} JIFU cards, but zero monitored cards. "
                     "No historical signals sent; replay remains available."
                 )
             else:
                 print(
-                    f"Queued {count} historical XAUUSD scanner cards to their "
+                    f"Queued {count} historical monitored scanner cards to their "
                     "individual Discord channels."
                 )
-            _send_scanner_pending(store, config, channels)
-            print("Queued XAUUSD scanner messages processed.")
+            _send_scanner_pending(store, config, channels, sniper_symbol_channels)
+            print("Queued monitored scanner messages processed.")
         finally:
             context.close()
             store.conn.close()
@@ -614,6 +631,7 @@ def watch(config: Config) -> None:
     _secure_profile(config.profile)
     _bot_token(config.bot_token_file)
     channels = _scanner_channel_map(config)
+    sniper_symbol_channels: dict[str, int] = {}
     store = ScannerStore(config.database)
     health = HealthMonitor(config)
     feed_age = FeedAgeWatchdog()
@@ -624,7 +642,7 @@ def watch(config: Config) -> None:
     last_coverage_log = 0.0
     login_file_raw = os.getenv("SKTRADER_JIFU_CREDENTIALS_FILE", "").strip()
     login_file = Path(login_file_raw) if login_file_raw else None
-    LOG.info("Starting XAUUSD-only scanner monitor for %s sources; WATCH ONLY", len(channels))
+    LOG.info("Starting XAUUSD scanners plus all Sniper Pro markets for %s sources; WATCH ONLY", len(channels))
     with sync_playwright() as playwright:
         viewport, args = browser_geometry()
         context = playwright.chromium.launch_persistent_context(
@@ -661,7 +679,7 @@ def watch(config: Config) -> None:
                     selector = _sidebar_scanner_state(page)
                     if selector != last_selector:
                         if selector == "unselected":
-                            LOG.info("JIFU Alerts sidebar unfiltered: monitoring all scanners, XAUUSD only")
+                            LOG.info("JIFU Alerts unfiltered: gold for all scanners plus every Sniper Pro market")
                         else:
                             LOG.warning("Alerts scanner dropdown=%s; monitoring paused until full feed is restored", selector)
                         last_selector = selector
@@ -711,11 +729,11 @@ def watch(config: Config) -> None:
                         )
                         new_count, baseline = 0, False
                     if baseline:
-                        LOG.info("Mixed feed baseline: %s existing cards, %s XAUUSD cards; history not replayed",
-                                 len(cards), sum(is_xauusd_card(card) for card in cards))
+                        LOG.info("Mixed feed baseline: %s existing cards, %s monitored cards; history not replayed",
+                                 len(cards), sum(is_monitored_card(card) for card in cards))
                     elif new_count:
-                        LOG.info("Queued %s new XAUUSD signals for source-specific channels", new_count)
-                    _send_scanner_pending(store, config, channels)
+                        LOG.info("Queued %s new monitored signals for dedicated channels", new_count)
+                    _send_scanner_pending(store, config, channels, sniper_symbol_channels)
                     if started - last_coverage_log >= 3600:
                         coverage = store.coverage()
                         LOG.info("JIFU scanner coverage (visible, not guaranteed active): %s",
@@ -777,10 +795,10 @@ def watch(config: Config) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Sktrader JIFU collector (watch-only)")
-    parser.add_argument("command", choices=["login", "diagnose", "watch", "replay-visible", "setup-channels"])
+    parser.add_argument("command", choices=["login", "diagnose", "watch", "replay-visible", "setup-channels", "setup-sniper-channels"])
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    config = Config.from_env(require_discord=args.command in {"watch", "replay-visible", "setup-channels"})
+    config = Config.from_env(require_discord=args.command in {"watch", "replay-visible", "setup-channels", "setup-sniper-channels"})
     with _one_browser_at_a_time(config.profile):
         if args.command == "setup-channels":
             channels = setup_channels(
@@ -792,6 +810,17 @@ def main() -> None:
                   "No channels created or deleted; no alerts posted.")
             for scanner, channel_id in channels.items():
                 print(f"  {scanner}: {channel_id}")
+        elif args.command == "setup-sniper-channels":
+            channels = _scanner_channel_map(config)
+            token = _bot_token(config.bot_token_file)
+            names = os.getenv("SKTRADER_SNIPER_SYMBOLS", "NAS100USD,US30USD,BTCUSDT")
+            symbols = list(dict.fromkeys(symbol.strip().upper() for symbol in names.split(",") if symbol.strip()))
+            if not symbols:
+                raise ValueError("SKTRADER_SNIPER_SYMBOLS is empty")
+            for symbol in symbols:
+                destination = ensure_sniper_symbol_channel(token, channels["SNIPER PRO"], symbol)
+                print(f"SNIPER PRO {symbol}: Discord channel {destination}")
+            print("Sniper Pro channels ready. No historical signals posted; no MT5 changes.")
         elif args.command == "login":
             login(config)
         elif args.command == "diagnose":

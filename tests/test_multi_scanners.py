@@ -9,6 +9,7 @@ from unittest.mock import patch
 from sktrader.core import SnapshotError
 from sktrader.multi_scanners import (
     SCANNER_CHANNELS, EXISTING_SIGNAL_CHANNELS, ScannerStore, discord_card, is_xauusd_card,
+    is_monitored_card, is_sniper_pro_card, ensure_sniper_symbol_channel,
     load_channels, parse_scanner_card, setup_channels,
 )
 from sktrader.watcher import Config, _send_scanner_pending
@@ -446,6 +447,102 @@ class MultiScannerTests(unittest.TestCase):
             self.assertEqual(sending.call_count, 2)
             ids = {call.kwargs["channel_id"] for call in sending.call_args_list}
             self.assertEqual(ids, {channels["WOLF X"], channels["AUROUX"]})
+            self.assertEqual(store.pending(), [])
+            store.conn.close()
+
+
+    def test_sniper_pro_non_gold_parsing_and_other_scanners_still_gold_only(self):
+        for symbol, direction, timeframe, poi, stop, tp1, tp2 in [
+            ("NAS100USD", "BUY", "15M", "27725.45000", "27625.45000", "27825.45000", "27925.45000"),
+            ("US30USD", "BUY", "5M", "52160.40000", "52060.40000", "52260.40000", "52360.40000"),
+            ("BTCUSDT", "SELL", "15M", "74074.16750", "74324.16750", "73824.16750", "73574.16750"),
+        ]:
+            with self.subTest(symbol=symbol):
+                raw = card("SNIPERPRO", symbol=symbol, timeframe=timeframe, direction=direction,
+                           suffix=f"Point of Interest {poi} Invalidation {stop} Exit 1 {tp1} Exit 2 {tp2}")
+                self.assertTrue(is_sniper_pro_card(raw))
+                self.assertTrue(is_monitored_card(raw))
+                parsed = parse_scanner_card(raw)
+                self.assertEqual((parsed.scanner, parsed.symbol, parsed.timeframe, parsed.side),
+                                 ("SNIPER PRO", symbol, timeframe, direction))
+                self.assertEqual([f["value"] for f in parsed.fields], [poi, stop, tp1, tp2])
+                self.assertIn(f"**{symbol}**", discord_card(parsed)["embeds"][0]["description"])
+        with self.assertRaisesRegex(ValueError, "Non-XAUUSD"):
+            parse_scanner_card(card("AUROUX", symbol="BTCUSDT"))
+        self.assertFalse(is_monitored_card(card("WOLFX", symbol="BTCUSDT")))
+
+    def test_sniper_pro_all_markets_outbox_preserves_gold_feed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ScannerStore(Path(tmp) / "events.db")
+            previous = [card("NEXUS", symbol="EURJPY"), card("HARMONICS", symbol="BTCUSDT")]
+            self.assertEqual(store.observe(previous), (0, True))
+            newly_seen = [
+                card("SNIPERPRO", symbol="NAS100USD"),
+                card("SNIPER PRO", symbol="US30USD"),
+                card("SNIPERPRO", symbol="BTCUSDT", direction="SELL"),
+                card("SNIPERPRO", symbol="XAUUSD"),
+                card("AUROUX", symbol="BTCUSDT"),
+            ]
+            self.assertEqual(store.observe(newly_seen + previous), (4, False))
+            self.assertEqual({event.symbol for _, event in store.pending()},
+                             {"NAS100USD", "US30USD", "BTCUSDT", "XAUUSD"})
+            self.assertEqual(store.observe(newly_seen + previous), (0, False))
+            store.conn.close()
+
+    def test_sniper_channel_reuses_existing_then_creates_only_when_missing(self):
+        anchor_id = 1565527578163552327
+        guild_id = "1200000000000000000"
+        category_id = "1300000000000000000"
+        existing_id = "1700000000000000000"
+        created_id = "1800000000000000000"
+        calls = []
+        def mock_request(token, method, route, payload=None):
+            calls.append((method, route, payload))
+            self.assertEqual(token, "mock-token")
+            if method == "GET" and route == f"/channels/{anchor_id}":
+                return {"name": "sniper-pro-signals", "type": 0,
+                        "guild_id": guild_id, "parent_id": category_id}
+            if method == "GET" and route == f"/guilds/{guild_id}/channels":
+                return [{"name": "sniper-pro-nas100usd-signals", "id": existing_id,
+                         "type": 0, "parent_id": category_id}]
+            if method == "POST" and route == f"/guilds/{guild_id}/channels":
+                self.assertEqual(payload["name"], "sniper-pro-btcusdt-signals")
+                self.assertEqual(payload["parent_id"], category_id)
+                return {"name": payload["name"], "id": created_id,
+                        "type": 0, "parent_id": category_id}
+            raise AssertionError(f"Unexpected Discord call: {method} {route}")
+        with patch("sktrader.multi_scanners._discord_json", side_effect=mock_request):
+            self.assertEqual(ensure_sniper_symbol_channel("mock-token", anchor_id, "XAUUSD"), anchor_id)
+            self.assertEqual(ensure_sniper_symbol_channel("mock-token", anchor_id, "NAS100USD"), int(existing_id))
+            self.assertEqual(ensure_sniper_symbol_channel("mock-token", anchor_id, "BTCUSDT"), int(created_id))
+        self.assertEqual(sum(method == "POST" for method, _, _ in calls), 1)
+
+    def test_sniper_routing_isolated_from_gold_execution_channel(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ScannerStore(Path(tmp) / "signals.db")
+            baseline = [card("NEXUS", symbol="EURJPY")]
+            store.observe(baseline)
+            store.observe([card("SNIPERPRO", symbol="US30USD"),
+                           card("SNIPERPRO", symbol="XAUUSD"),
+                           card("AUROUX", symbol="XAUUSD")] + baseline)
+            channels = {scanner: 1600000000000000000 + i
+                        for i, scanner in enumerate(SCANNER_CHANNELS)}
+            gold_channel = channels["SNIPER PRO"]
+            dedicated_channel = 1900000000000000000
+            config = Config.from_env(require_discord=False)
+            with patch("sktrader.watcher.ensure_sniper_symbol_channel",
+                       return_value=dedicated_channel) as ensure, \
+                 patch("sktrader.watcher._bot_token", return_value="mock-token"), \
+                 patch("sktrader.watcher._post_discord") as posting:
+                _send_scanner_pending(store, config, channels)
+            ensure.assert_called_once_with("mock-token", gold_channel, "US30USD")
+            posted = [(call.args[1]["embeds"][0]["description"], call.kwargs["channel_id"])
+                      for call in posting.call_args_list]
+            self.assertTrue(any("**US30USD**" in desc and target == dedicated_channel
+                                for desc, target in posted))
+            self.assertTrue(any("**XAUUSD**" in desc and target == gold_channel
+                                for desc, target in posted))
+            self.assertEqual(posting.call_count, 3)
             self.assertEqual(store.pending(), [])
             store.conn.close()
 
