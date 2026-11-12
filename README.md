@@ -1,12 +1,12 @@
 # Sktrader
 
-JIFU Alerts collector. It reads the mixed, unfiltered JIFU Alerts sidebar
-in one persistent Chromium session, monitoring **XAUUSD from every scanner**
-plus **every instrument published by Sniper Pro**. Messages route to a
-separate Discord channel per source and, for non-gold Sniper Pro, per symbol.
+JIFU Alerts collector. **One persistent Chromium browser and one JIFU
+mixed-feed watcher**, monitoring every recognised signal card from every scanner
+and instrument. The existing DK Capital Discord bot routes known instruments to
+their configured channels and everything new/unmapped to one shared channel.
 
 **Watch-only. No MT5, broker credentials, trading decisions or order placement.**
-Non-XAUUSD alerts from all other scanners are ignored.
+All existing scanner channels continue to receive only XAUUSD.
 
 ## Sources and destinations
 
@@ -20,21 +20,23 @@ Non-XAUUSD alerts from all other scanners are ignored.
 | SNIPER PRO (NAS100USD) | `#sniper-pro-nas100usd-signals` (new) |
 | SNIPER PRO (US30USD) | `#sniper-pro-us30usd-signals` (new) |
 | SNIPER PRO (BTCUSDT) | `#sniper-pro-btcusdt-signals` (new) |
-| SNIPER PRO (any future symbol) | Dedicated `#sniper-pro-<symbol>-signals`, created on first delivery |
+| SNIPER PRO (other symbols) | `#jifu-other-signals` (shared watch-only channel) |
+| Any scanner (non-XAUUSD, except the three above) | `#jifu-other-signals` |
+| New or unrecognised scanners | `#jifu-other-signals` |
 | WOLF X / WOLFX | `#wolfx-signals` |
 | HARMONICS | `#harmonics-signals` |
 | PRIME | `#prime-signals` |
 
 The bot posts **one card per new monitored signal**, even for matching prices across
-different scanners or timeframes. It includes source, display age, XAUUSD,
+different scanners or timeframes. It includes source, display age, symbol,
 timeframe/direction and the signal's actual displayed labels/values.
 Different scanners may have extra exits or zone data. Absent fields are
 **not invented**. No health chatter goes to the signal channels.
 
 **Gold execution remains isolated.** The Discord-to-MT5 bridge continues to
 read only the existing `#sniper-pro-signals` channel ID
-`1565527578163552327`. The new channels are notification-only. Do not
-add their IDs to any trading bridge or EA.
+`1565527578163552327`. The additional instrument channels and the catch-all channel are notification-only.
+Do not add their IDs to any trading bridge or EA.
 
 ## JIFU configuration
 
@@ -103,9 +105,11 @@ XAUUSD alerts. Removal is a separate manual action, not part of setup.
 ### Create the new Sniper Pro channels
 
 The DK Capital bot needs **Manage Channels**, **Send Messages** and **Embed Links**
-permissions under the current Signals category. Stop the **Sktrader watcher
-only** before channel setup because the collector uses a browser-profile lock.
-Do not stop MT5, the Discord limit bridge or the separate compiler VNC.
+permissions under the current Signals category. Setup is Discord-only and does
+**not** start a second browser or acquire the active JIFU browser lock.
+The running watcher can continue during channel provisioning. Restart only
+the watcher after pulling the new code; do not stop MT5, the Discord limit
+bridge or the separate compiler VNC.
 
 After merging the feature and updating `/opt/sktrader`, run:
 
@@ -118,14 +122,13 @@ exec /opt/sktrader/.venv/bin/python -u -m sktrader setup-sniper-channels
 '
 ```
 
-The command creates or reuses three channels in the same category as the
-existing `#sniper-pro-signals`: NAS100USD, US30USD and BTCUSDT. It does
-not post alerts, alter the gold channel or change any trading process.
-Optionally precreate additional symbol channels by setting
-`SKTRADER_SNIPER_SYMBOLS` to a comma-separated list.
-Future Sniper Pro symbols automatically get a dedicated channel on their
-first new signal. If creation fails, the SQLite event remains pending
-for retry and is **never** redirected to the gold trading channel.
+The command creates or reuses four channels in the same category as the
+existing `#sniper-pro-signals`: NAS100USD, US30USD, BTCUSDT and
+`#jifu-other-signals`. It does not post alerts or modify trading services.
+Unknown scanner names and instruments are routed into the one shared
+`#jifu-other-signals` channel, **not** into freshly created channels.
+If the Discord API fails, the SQLite event remains pending for retry and
+is **never** redirected to the gold trading channel.
 
 ### Start the visible watcher
 
@@ -146,10 +149,11 @@ exec /opt/sktrader/.venv/bin/python -u -m sktrader watch
 ```
 
 The first complete mixed-feed read establishes a baseline and does **not**
-post older alerts. New XAUUSD scanner cards go to their original scanner
-channels. New non-gold Sniper Pro cards go to dedicated instrument channels.
-All other non-gold scanner-market combinations remain excluded. Poll interval defaults to five seconds,
-configured by `SKTRADER_POLL_SECONDS`.
+post older alerts. New XAUUSD cards go to their existing scanner channels.
+New Sniper Pro NAS100USD, US30USD and BTCUSDT cards go to dedicated channels.
+Everything else goes to the shared catch-all channel with its scanner,
+symbol, timeframe and original fields. No second browser is launched.
+Poll interval defaults to five seconds, configured by `SKTRADER_POLL_SECONDS`.
 
 ## Optional one-time historical replay
 
@@ -171,9 +175,9 @@ actionable. Messages contain the original scanner-card fields only.
 - If the mixed list reorders without enough overlap, the reader pauses
   rather than inventing event identities. JIFU does not provide stable
   event IDs here.
-- If a newly published monitored card has an unsupported scanner or malformed
-  structure, the current pass is rejected, the cursor is preserved and
-  the diagnostic is written only to local logs.
+- A new scanner or instrument routes to `#jifu-other-signals`, provided its
+  card conforms to the JIFU parser format. A malformed card still causes the
+  pass to be rejected without advancing the cursor. Diagnostics stay in logs.
 - Discord posting uses authenticated REST calls as the **same existing bot**;
   it does not launch a second bot or change the DK Capital trading runtime.
 - Durable pending events are retried after a crash; a duplicate remains
