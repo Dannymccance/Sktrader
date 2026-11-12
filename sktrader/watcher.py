@@ -17,8 +17,9 @@ from pathlib import Path
 from sktrader.core import Alert, AlertError, EventStore, SnapshotError, auroux_xauusd_card, merge_history_page, parse_card, feed_fingerprint
 
 from sktrader.multi_scanners import (
-    SCANNER_CHANNELS, ScannerStore, discord_card, is_xauusd_card, is_monitored_card,
-    ensure_sniper_symbol_channel, load_channels, setup_channels,
+    SCANNER_CHANNELS, SNIPER_DEDICATED_SYMBOLS, ScannerStore, discord_card,
+    is_xauusd_card, is_monitored_card, ensure_sniper_symbol_channel,
+    ensure_other_signals_channel, load_channels, setup_channels,
 )
 
 LOG = logging.getLogger("sktrader")
@@ -434,15 +435,17 @@ def _send_scanner_pending(
     store: ScannerStore, config: Config, channels: dict[str, int],
     sniper_symbol_channels: dict[str, int] | None = None,
 ) -> None:
-    """Route only gold to existing scanner channels; other Sniper Pro markets elsewhere."""
+    """Isolate the existing gold channels; route every other signal safely.
+
+    Reuse one bot and one watcher. Only known Sniper instruments receive their
+    own channels; unknown scanners/symbols share the non-trading catch-all.
+    """
     if sniper_symbol_channels is None:
         sniper_symbol_channels = {}
     for event_id, signal in store.pending():
-        if signal.scanner not in channels:
-            raise SnapshotError("Unmapped scanner signal in outbox")
-        if signal.symbol == "XAUUSD":
+        if signal.symbol == "XAUUSD" and signal.scanner in channels:
             destination = channels[signal.scanner]
-        elif signal.scanner == "SNIPER PRO":
+        elif signal.scanner == "SNIPER PRO" and signal.symbol in SNIPER_DEDICATED_SYMBOLS:
             destination = sniper_symbol_channels.get(signal.symbol)
             if destination is None:
                 destination = ensure_sniper_symbol_channel(
@@ -450,7 +453,12 @@ def _send_scanner_pending(
                 )
                 sniper_symbol_channels[signal.symbol] = destination
         else:
-            raise SnapshotError("Non-gold signal from non-Sniper scanner in outbox")
+            destination = sniper_symbol_channels.get("__OTHER__")
+            if destination is None:
+                destination = ensure_other_signals_channel(
+                    _bot_token(config.bot_token_file), channels["SNIPER PRO"],
+                )
+                sniper_symbol_channels["__OTHER__"] = destination
         _post_discord(config, discord_card(signal), event_id=event_id,
                       channel_id=destination)
         store.delivered(event_id)
@@ -642,7 +650,7 @@ def watch(config: Config) -> None:
     last_coverage_log = 0.0
     login_file_raw = os.getenv("SKTRADER_JIFU_CREDENTIALS_FILE", "").strip()
     login_file = Path(login_file_raw) if login_file_raw else None
-    LOG.info("Starting XAUUSD scanners plus all Sniper Pro markets for %s sources; WATCH ONLY", len(channels))
+    LOG.info("Starting all JIFU scanner markets for %s mapped sources; WATCH ONLY", len(channels))
     with sync_playwright() as playwright:
         viewport, args = browser_geometry()
         context = playwright.chromium.launch_persistent_context(
@@ -679,7 +687,7 @@ def watch(config: Config) -> None:
                     selector = _sidebar_scanner_state(page)
                     if selector != last_selector:
                         if selector == "unselected":
-                            LOG.info("JIFU Alerts unfiltered: gold for all scanners plus every Sniper Pro market")
+                            LOG.info("JIFU Alerts unfiltered: all scanners and instruments from one browser")
                         else:
                             LOG.warning("Alerts scanner dropdown=%s; monitoring paused until full feed is restored", selector)
                         last_selector = selector
@@ -817,14 +825,12 @@ def main() -> None:
         elif args.command == "setup-sniper-channels":
             channels = _scanner_channel_map(config)
             token = _bot_token(config.bot_token_file)
-            names = os.getenv("SKTRADER_SNIPER_SYMBOLS", "NAS100USD,US30USD,BTCUSDT")
-            symbols = list(dict.fromkeys(symbol.strip().upper() for symbol in names.split(",") if symbol.strip()))
-            if not symbols:
-                raise ValueError("SKTRADER_SNIPER_SYMBOLS is empty")
-            for symbol in symbols:
+            for symbol in SNIPER_DEDICATED_SYMBOLS:
                 destination = ensure_sniper_symbol_channel(token, channels["SNIPER PRO"], symbol)
                 print(f"SNIPER PRO {symbol}: Discord channel {destination}")
-            print("Sniper Pro channels ready. No historical signals posted; no MT5 changes.")
+            other = ensure_other_signals_channel(token, channels["SNIPER PRO"])
+            print(f"OTHER JIFU SIGNALS: Discord channel {other}")
+            print("Signal channels ready. No historical signals posted; no MT5 changes.")
         elif args.command == "login":
             login(config)
         elif args.command == "diagnose":
