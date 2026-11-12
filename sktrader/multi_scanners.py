@@ -1,4 +1,4 @@
-"""Watch-only JIFU signals: XAUUSD for all scanners, all markets for Sniper Pro."""
+"""Watch-only JIFU mixed-feed signals, routed without touching trading execution."""
 from __future__ import annotations
 
 import json
@@ -36,6 +36,9 @@ EXISTING_SIGNAL_CHANNELS = {
     "HARMONICS": "harmonics-signals",
     "PRIME": "prime-signals",
 }
+SNIPER_DEDICATED_SYMBOLS = ("NAS100USD", "US30USD", "BTCUSDT")
+OTHER_SIGNALS_CHANNEL = "jifu-other-signals"
+
 SCANNER_ALIASES = {
     **{name: name for name in SCANNER_CHANNELS},
     "SNIPERPRO": "SNIPER PRO", "WOLFX": "WOLF X", "TRENDWAVE": "TREND WAVE",
@@ -75,7 +78,9 @@ def is_sniper_pro_card(text: str) -> bool:
 
 
 def is_monitored_card(text: str) -> bool:
-    return is_xauusd_card(text) or is_sniper_pro_card(text)
+    """Recognise signals from any scanner in the one unfiltered JIFU feed."""
+    return bool(re.search(r"\b(?:1M|5M|15M|30M|1H|4H)\s*-\s*(?:BUY|SELL)\b", text, re.I)
+                and re.search(r"\bPoint\s+of\s+Interest\b", text, re.I)) or is_xauusd_card(text) or is_sniper_pro_card(text)
 
 
 def parse_scanner_card(text: str) -> ScannerSignal:
@@ -85,12 +90,10 @@ def parse_scanner_card(text: str) -> ScannerSignal:
     if not match:
         raise AlertError("Invalid scanner signal header")
     source = re.sub(r"\s+SCANNER$", "", match["scanner"].strip().upper())
-    scanner = SCANNER_ALIASES.get(source)
-    if scanner not in SCANNER_CHANNELS:
-        raise AlertError("Unconfigured scanner")
+    scanner = SCANNER_ALIASES.get(source, source)
+    if len(scanner) > 120:
+        raise AlertError("Scanner title too long")
     symbol = match["symbol"].upper()
-    if symbol != "XAUUSD" and scanner != "SNIPER PRO":
-        raise AlertError("Non-XAUUSD scanner signal")
     body = match["body"]
     tokens = list(LABELS.finditer(body))
     if not tokens or tokens[0].start() != 0:
@@ -483,17 +486,27 @@ def setup_channels(token: str, auroux_channel: int, mapping_path: Path) -> dict[
 
 
 def ensure_sniper_symbol_channel(token: str, anchor_channel_id: int, symbol: str) -> int:
-    """Find/create a Sniper Pro instrument channel beside the existing gold one.
-
-    Only Sniper Pro non-gold signals call this. An existing channel is reused.
-    Discord permission or API failures leave the SQLite outbox undelivered.
-    """
+    """Only route three explicitly configured Sniper instruments separately."""
     symbol = symbol.upper()
     if symbol == "XAUUSD":
         return anchor_channel_id
-    if not re.fullmatch(r"[A-Z][A-Z0-9.]{1,19}", symbol):
-        raise ValueError("Invalid Sniper Pro instrument symbol")
-    name = "sniper-pro-" + symbol.lower().replace(".", "-") + "-signals"
+    if symbol not in SNIPER_DEDICATED_SYMBOLS:
+        raise ValueError("Unknown Sniper Pro symbol must use shared other-signals channel")
+    name = "sniper-pro-" + symbol.lower() + "-signals"
+    return _ensure_named_channel(token, anchor_channel_id, name,
+                                 f"JIFU Sniper Pro {symbol} alerts. Watch-only; no MT5 trading.")
+
+
+def ensure_other_signals_channel(token: str, anchor_channel_id: int) -> int:
+    """One catch-all channel for new scanners and non-dedicated instruments."""
+    return _ensure_named_channel(
+        token, anchor_channel_id, OTHER_SIGNALS_CHANNEL,
+        "Other JIFU alerts, all scanners/instruments. Watch-only; no MT5 trading.",
+    )
+
+
+def _ensure_named_channel(token: str, anchor_channel_id: int, name: str, topic: str) -> int:
+    """Create/reuse a destination beside the existing Sniper gold channel."""
     anchor = _discord_json(token, "GET", f"/channels/{anchor_channel_id}")
     guild_id = str(anchor.get("guild_id", ""))
     category_id = anchor.get("parent_id")
@@ -514,7 +527,7 @@ def ensure_sniper_symbol_channel(token: str, anchor_channel_id: int, symbol: str
             "name": name,
             "type": 0,
             "parent_id": category_id,
-            "topic": f"JIFU Sniper Pro {symbol} alerts. Watch-only; no MT5 trading.",
+            "topic": topic,
         })
         if (not isinstance(created, dict) or created.get("name") != name
                 or created.get("type") != 0

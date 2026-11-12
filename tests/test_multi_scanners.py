@@ -237,11 +237,9 @@ class MultiScannerTests(unittest.TestCase):
         self.assertEqual([f["name"] for f in discord_card(prime)["embeds"][0]["fields"]],
                          ["Point of Interest", "Zone"])
 
-    def test_unrecognized_xauusd_scanner_fails_not_misroutes(self):
-        with self.assertRaisesRegex(ValueError, "Unconfigured"):
-            parse_scanner_card(card("FAKEBANK"))
-        with self.assertRaisesRegex(ValueError, "Non-XAUUSD"):
-            parse_scanner_card(card("AUROUX", symbol="XAGUSD"))
+    def test_new_scanners_and_non_gold_markets_are_parsed_not_dropped(self):
+        self.assertEqual(parse_scanner_card(card("FAKEBANK")).scanner, "FAKEBANK")
+        self.assertEqual(parse_scanner_card(card("AUROUX", symbol="XAGUSD")).symbol, "XAGUSD")
 
     def test_baseline_and_only_new_gold_cards_queued(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -278,7 +276,7 @@ class MultiScannerTests(unittest.TestCase):
             old = [card("WOLFX", "USDCAD"), card("HARMONICS", "BTCUSDT")]
             self.assertEqual(store.observe(old), (0, True))
             with self.assertRaisesRegex(SnapshotError, "Unparseable"):
-                store.observe([card("FAKEBANK")] + old)
+                store.observe([card("FAKEBANK", suffix="Point of Interest")] + old)
             self.assertEqual(store.observe([card("AUROUX")] + old), (1, False))
             store.conn.close()
 
@@ -329,8 +327,8 @@ class MultiScannerTests(unittest.TestCase):
             latest = [card("AUROUX"), card("WOLFX", "USDJPY")]
             archive = latest + [card("PRIME", suffix="Point of Interest 4000 Zone S0"),
                                 card("HARMONICS", symbol="BTCUSDT")]
-            self.assertEqual(store.replay_once(archive, newest=latest), (2, False))
-            self.assertEqual(len(store.pending()), 2)
+            self.assertEqual(store.replay_once(archive, newest=latest), (4, False))
+            self.assertEqual(len(store.pending()), 4)
             self.assertEqual(store.observe(latest), (0, False))
             store.conn.close()
             again = ScannerStore(filename)
@@ -451,7 +449,7 @@ class MultiScannerTests(unittest.TestCase):
             store.conn.close()
 
 
-    def test_sniper_pro_non_gold_parsing_and_other_scanners_still_gold_only(self):
+    def test_sniper_pro_and_other_scanners_parse_non_gold_in_one_feed(self):
         for symbol, direction, timeframe, poi, stop, tp1, tp2 in [
             ("NAS100USD", "BUY", "15M", "27725.45000", "27625.45000", "27825.45000", "27925.45000"),
             ("US30USD", "BUY", "5M", "52160.40000", "52060.40000", "52260.40000", "52360.40000"),
@@ -467,9 +465,8 @@ class MultiScannerTests(unittest.TestCase):
                                  ("SNIPER PRO", symbol, timeframe, direction))
                 self.assertEqual([f["value"] for f in parsed.fields], [poi, stop, tp1, tp2])
                 self.assertIn(f"**{symbol}**", discord_card(parsed)["embeds"][0]["description"])
-        with self.assertRaisesRegex(ValueError, "Non-XAUUSD"):
-            parse_scanner_card(card("AUROUX", symbol="BTCUSDT"))
-        self.assertFalse(is_monitored_card(card("WOLFX", symbol="BTCUSDT")))
+        self.assertEqual(parse_scanner_card(card("AUROUX", symbol="BTCUSDT")).symbol, "BTCUSDT")
+        self.assertTrue(is_monitored_card(card("WOLFX", symbol="BTCUSDT")))
 
     def test_sniper_pro_all_markets_outbox_preserves_gold_feed(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -483,7 +480,8 @@ class MultiScannerTests(unittest.TestCase):
                 card("SNIPERPRO", symbol="XAUUSD"),
                 card("AUROUX", symbol="BTCUSDT"),
             ]
-            self.assertEqual(store.observe(newly_seen + previous), (4, False))
+            self.assertEqual(store.observe(newly_seen + previous), (5, False))
+            self.assertEqual(len(store.pending()), 5)
             self.assertEqual({event.symbol for _, event in store.pending()},
                              {"NAS100USD", "US30USD", "BTCUSDT", "XAUUSD"})
             self.assertEqual(store.observe(newly_seen + previous), (0, False))
