@@ -327,8 +327,8 @@ class MultiScannerTests(unittest.TestCase):
             latest = [card("AUROUX"), card("WOLFX", "USDJPY")]
             archive = latest + [card("PRIME", suffix="Point of Interest 4000 Zone S0"),
                                 card("HARMONICS", symbol="BTCUSDT")]
-            self.assertEqual(store.replay_once(archive, newest=latest), (3, False))
-            self.assertEqual(len(store.pending()), 3)
+            self.assertEqual(store.replay_once(archive, newest=latest), (4, False))
+            self.assertEqual(len(store.pending()), 4)
             self.assertEqual(store.observe(latest), (0, False))
             store.conn.close()
             again = ScannerStore(filename)
