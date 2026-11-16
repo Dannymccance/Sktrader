@@ -39,7 +39,8 @@ def browser_geometry() -> tuple[dict[str, int], list[str]]:
 
 # Read only the scanner selector in the Alerts sidebar header, not the
 # separate chart-scanner selector at the top left or the AUROUX alert cards.
-# This returns a status only and never clicks or changes the user's UI.
+# Legacy JIFU shows 'Select Scanner'; the November 2026 UI shows
+# 'All scanners' with the subtitle 'No filter'. Never click or change the UI.
 SIDEBAR_SCANNER_STATE_JS = r"""() => {
   const tree = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
   let foundAuroux = false;
@@ -47,14 +48,14 @@ SIDEBAR_SCANNER_STATE_JS = r"""() => {
   let node;
   while ((node = tree.nextNode())) {
     const t = (node.nodeValue || '').trim().replace(/\s+/g, ' ');
-    if (!/^(?:AUROUX(?:\s+SCANNER)?|Select Scanner(?:\s+Choose an option)?)$/i.test(t)) continue;
+    if (!/^(?:AUROUX(?:\s+SCANNER)?|Select Scanner(?:\s+Choose an option)?|All scanners(?:\s+No filter)?)$/i.test(t)) continue;
     const r = node.parentElement?.getBoundingClientRect();
     if (!r || r.width <= 0 || r.height <= 0 ||
         r.left < window.innerWidth * 0.60 ||
         r.left >= window.innerWidth ||
         r.top < window.innerHeight * 0.09 ||
         r.top > window.innerHeight * 0.35) continue;
-    if (/^Select Scanner/i.test(t)) foundUnselected = true;
+    if (/^(?:Select Scanner|All scanners)/i.test(t)) foundUnselected = true;
     else foundAuroux = true;
   }
   // Select Scanner takes priority if a stale Auroux label is also present.
@@ -322,7 +323,7 @@ def _one_browser_at_a_time(profile: Path):
 
 
 def _prepare_page(page) -> None:
-    """Preserve the unfiltered right-hand JIFU Alerts > Select Scanner > All.
+    """Preserve the unfiltered right-hand JIFU Alerts scanner selector.
 
     Do not click the unrelated chart scanner, tabs or All buttons; JIFU can
     change the feed when its React controls are manipulated or reloaded.
@@ -500,7 +501,7 @@ def login(config: Config) -> None:
         try:
             page = context.pages[0] if context.pages else context.new_page()
             page.goto(config.url, wait_until="domcontentloaded", timeout=45000)
-            print("Log into JIFU, open Alerts, leave right-hand scanner at Select Scanner and timeframe at All.")
+            print("Log into JIFU, open Alerts, select All scanners (No filter) and timeframe All.")
             input("Once the alerts are visible, press Enter to save the browser session and close: ")
         finally:
             context.close()
