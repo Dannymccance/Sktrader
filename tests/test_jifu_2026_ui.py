@@ -86,8 +86,8 @@ class Jifu2026UiTests(unittest.TestCase):
             old_seen = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
             with store.conn:
                 store.conn.execute(
-                    "INSERT INTO scanner_coverage(scanner,last_seen_at) VALUES(?,?)",
-                    ("WOLF X", old_seen),
+                    "UPDATE scanner_coverage SET last_seen_at=? WHERE scanner=?",
+                    (old_seen, "WOLF X"),
                 )
             self.assertTrue(store.stale_after_outage())
             store.baseline_after_outage([NEW_TRENDWAVE, NEW_WOLFX])
@@ -106,9 +106,9 @@ class Jifu2026UiTests(unittest.TestCase):
             store.observe([NEW_WOLFX])
             with store.conn:
                 store.conn.execute(
-                    "INSERT INTO scanner_coverage(scanner,last_seen_at) VALUES(?,?)",
-                    ("WOLF X", __import__("datetime").datetime.now(
-                        __import__("datetime").timezone.utc).isoformat()),
+                    "UPDATE scanner_coverage SET last_seen_at=? WHERE scanner=?",
+                    (__import__("datetime").datetime.now(
+                        __import__("datetime").timezone.utc).isoformat(), "WOLF X"),
                 )
             self.assertFalse(store.stale_after_outage())
             store.conn.close()
