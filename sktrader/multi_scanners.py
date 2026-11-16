@@ -211,6 +211,55 @@ class ScannerStore:
         ).fetchone()
         return json.loads(row[0]) if row else None
 
+    def stale_after_outage(self, *, minutes: int = 30) -> bool:
+        """First poll after a long outage must not replay the latest old card.
+
+        Coverage timestamps are written on successful mixed-feed polls.
+        If the old snapshot exists but its age is unknown, fail closed.
+        """
+        if self._snapshot() is None:
+            return False
+        row = self.conn.execute("SELECT MAX(last_seen_at) FROM scanner_coverage").fetchone()
+        if not row or not row[0]:
+            return True
+        try:
+            last_seen = datetime.fromisoformat(row[0])
+        except ValueError:
+            return True
+        if last_seen.tzinfo is None:
+            return True
+        return datetime.now(timezone.utc) - last_seen > timedelta(minutes=minutes)
+
+    def baseline_after_outage(self, cards: list[str]) -> None:
+        """Persist the current feed as a recovery baseline without posting it.
+
+        Unlike rebaseline_after_gap, this is also safe when part of the old
+        fingerprint sequence survived a prolonged outage.
+        """
+        if not cards:
+            raise SnapshotError("Cannot baseline an empty JIFU scanner feed")
+        previous = self._snapshot()
+        if previous is None:
+            raise SnapshotError("Prolonged-outage baseline requires an old snapshot")
+        current = [feed_fingerprint(card) for card in cards]
+        now = datetime.now(timezone.utc).isoformat()
+        with self.conn:
+            self.conn.execute(
+                "CREATE TABLE IF NOT EXISTS scanner_monitoring_gaps "
+                "(id INTEGER PRIMARY KEY AUTOINCREMENT, recovered_at TEXT NOT NULL, "
+                "previous_cards INTEGER NOT NULL, replacement_cards INTEGER NOT NULL)"
+            )
+            self.conn.execute(
+                "INSERT INTO scanner_monitoring_gaps "
+                "(recovered_at, previous_cards, replacement_cards) VALUES(?,?,?)",
+                (now, len(previous), len(current)),
+            )
+            self.conn.execute(
+                "UPDATE scanner_feed_snapshot SET fingerprints=? WHERE id=1",
+                (json.dumps(current),),
+            )
+
+
     def observe(self, cards: list[str], *, allow_newest_only: bool = False) -> tuple[int, bool]:
         if not cards:
             raise SnapshotError("Empty mixed scanner feed")
