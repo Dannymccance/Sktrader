@@ -39,7 +39,8 @@ def browser_geometry() -> tuple[dict[str, int], list[str]]:
 
 # Read only the scanner selector in the Alerts sidebar header, not the
 # separate chart-scanner selector at the top left or the AUROUX alert cards.
-# This returns a status only and never clicks or changes the user's UI.
+# Legacy JIFU shows 'Select Scanner'; the November 2026 UI shows
+# 'All scanners' with the subtitle 'No filter'. Never click or change the UI.
 SIDEBAR_SCANNER_STATE_JS = r"""() => {
   const tree = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
   let foundAuroux = false;
@@ -47,14 +48,14 @@ SIDEBAR_SCANNER_STATE_JS = r"""() => {
   let node;
   while ((node = tree.nextNode())) {
     const t = (node.nodeValue || '').trim().replace(/\s+/g, ' ');
-    if (!/^(?:AUROUX(?:\s+SCANNER)?|Select Scanner(?:\s+Choose an option)?)$/i.test(t)) continue;
+    if (!/^(?:AUROUX(?:\s+SCANNER)?|Select Scanner(?:\s+Choose an option)?|All scanners(?:\s+No filter)?)$/i.test(t)) continue;
     const r = node.parentElement?.getBoundingClientRect();
     if (!r || r.width <= 0 || r.height <= 0 ||
         r.left < window.innerWidth * 0.60 ||
         r.left >= window.innerWidth ||
         r.top < window.innerHeight * 0.09 ||
         r.top > window.innerHeight * 0.35) continue;
-    if (/^Select Scanner/i.test(t)) foundUnselected = true;
+    if (/^(?:Select Scanner|All scanners)/i.test(t)) foundUnselected = true;
     else foundAuroux = true;
   }
   // Select Scanner takes priority if a stale Auroux label is also present.
@@ -322,7 +323,7 @@ def _one_browser_at_a_time(profile: Path):
 
 
 def _prepare_page(page) -> None:
-    """Preserve the unfiltered right-hand JIFU Alerts > Select Scanner > All.
+    """Preserve the unfiltered right-hand JIFU Alerts scanner selector.
 
     Do not click the unrelated chart scanner, tabs or All buttons; JIFU can
     change the feed when its React controls are manipulated or reloaded.
@@ -500,7 +501,7 @@ def login(config: Config) -> None:
         try:
             page = context.pages[0] if context.pages else context.new_page()
             page.goto(config.url, wait_until="domcontentloaded", timeout=45000)
-            print("Log into JIFU, open Alerts, leave right-hand scanner at Select Scanner and timeframe at All.")
+            print("Log into JIFU, open Alerts, select All scanners (No filter) and timeframe All.")
             input("Once the alerts are visible, press Enter to save the browser session and close: ")
         finally:
             context.close()
@@ -669,6 +670,7 @@ def watch(config: Config) -> None:
             # Require two consecutive complete, identical fingerprints before
             # accepting that JIFU has genuinely replaced the visible feed.
             gap_candidate = None
+            first_successful_read = True
             while True:
                 started = time.monotonic()
                 try:
@@ -712,30 +714,45 @@ def watch(config: Config) -> None:
                                 str(age_exc)[:180],
                             )
                             last_age_warning = started
-                    try:
-                        new_count, baseline = store.observe(cards, allow_newest_only=True)
-                        gap_candidate = None
-                    except SnapshotError as overlap_exc:
-                        if not any(reason in str(overlap_exc) for reason in (
-                            "without an identifiable overlap",
-                            "Insufficient overlap",
-                        )):
-                            raise
-                        fingerprints = tuple(feed_fingerprint(card) for card in cards)
-                        if gap_candidate != fingerprints:
-                            gap_candidate = fingerprints
-                            raise
-                        store.rebaseline_after_gap(cards)
+                    if first_successful_read and store.stale_after_outage():
+                        # The old selector may have blocked monitoring for days.
+                        # Old visible signals must never be pushed to a trading
+                        # Discord channel as newly issued alerts on restart.
+                        store.baseline_after_outage(cards)
+                        new_count, baseline = 0, False
                         gap_candidate = None
                         LOG.error(
-                            "JIFU MONITORING GAP: old feed disappeared; saved a "
-                            "new stable cursor (%s cards). Old visible cards "
-                            "were NOT replayed because their identity is uncertain. "
-                            "New signals will resume; inspect JIFU manually for "
-                            "missed signals during the outage.",
+                            "JIFU PROLONGED MONITORING GAP: saved a new baseline "
+                            "(%s visible cards). No historical alerts replayed. "
+                            "Only signals arriving AFTER this baseline will post.",
                             len(cards),
                         )
-                        new_count, baseline = 0, False
+                    else:
+                        try:
+                            new_count, baseline = store.observe(cards, allow_newest_only=True)
+                            gap_candidate = None
+                        except SnapshotError as overlap_exc:
+                            if not any(reason in str(overlap_exc) for reason in (
+                                "without an identifiable overlap",
+                                "Insufficient overlap",
+                            )):
+                                raise
+                            fingerprints = tuple(feed_fingerprint(card) for card in cards)
+                            if gap_candidate != fingerprints:
+                                gap_candidate = fingerprints
+                                raise
+                            store.rebaseline_after_gap(cards)
+                            gap_candidate = None
+                            LOG.error(
+                                "JIFU MONITORING GAP: old feed disappeared; saved a "
+                                "new stable cursor (%s cards). Old visible cards "
+                                "were NOT replayed because their identity is uncertain. "
+                                "New signals will resume; inspect JIFU manually for "
+                                "missed signals during the outage.",
+                                len(cards),
+                            )
+                            new_count, baseline = 0, False
+                    first_successful_read = False
                     if baseline:
                         LOG.info("Mixed feed baseline: %s existing cards, %s monitored cards; history not replayed",
                                  len(cards), sum(is_monitored_card(card) for card in cards))
