@@ -77,6 +77,42 @@ class Jifu2026UiTests(unittest.TestCase):
         values = {f["name"]: f["value"] for f in parsed.fields}
         self.assertEqual(values["Exit3"], "3892.38000")
 
+    def test_long_outage_baselines_without_posting_old_alerts(self):
+        from datetime import datetime, timedelta, timezone
+
+        with tempfile.TemporaryDirectory() as folder:
+            store = ScannerStore(Path(folder) / "signals.db")
+            store.observe([NEW_WOLFX])
+            old_seen = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
+            with store.conn:
+                store.conn.execute(
+                    "INSERT INTO scanner_coverage(scanner,last_seen_at) VALUES(?,?)",
+                    ("WOLF X", old_seen),
+                )
+            self.assertTrue(store.stale_after_outage())
+            store.baseline_after_outage([NEW_TRENDWAVE, NEW_WOLFX])
+            self.assertEqual(store.pending(), [])
+            self.assertEqual(store.observe([NEW_TRENDWAVE, NEW_WOLFX]), (0, False))
+            recent = NEW_WOLFX.replace("3864.38000", "3865.38000")
+            self.assertEqual(
+                store.observe([recent, NEW_TRENDWAVE, NEW_WOLFX]), (1, False)
+            )
+            self.assertEqual(len(store.pending()), 1)
+            store.conn.close()
+
+    def test_fresh_feed_does_not_force_rebaseline(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = ScannerStore(Path(folder) / "signals.db")
+            store.observe([NEW_WOLFX])
+            with store.conn:
+                store.conn.execute(
+                    "INSERT INTO scanner_coverage(scanner,last_seen_at) VALUES(?,?)",
+                    ("WOLF X", __import__("datetime").datetime.now(
+                        __import__("datetime").timezone.utc).isoformat()),
+                )
+            self.assertFalse(store.stale_after_outage())
+            store.conn.close()
+
     def test_identical_cards_are_not_reposted(self):
         with tempfile.TemporaryDirectory() as folder:
             store = ScannerStore(Path(folder) / "signals.db")
