@@ -670,6 +670,7 @@ def watch(config: Config) -> None:
             # Require two consecutive complete, identical fingerprints before
             # accepting that JIFU has genuinely replaced the visible feed.
             gap_candidate = None
+            first_successful_read = True
             while True:
                 started = time.monotonic()
                 try:
@@ -713,30 +714,45 @@ def watch(config: Config) -> None:
                                 str(age_exc)[:180],
                             )
                             last_age_warning = started
-                    try:
-                        new_count, baseline = store.observe(cards, allow_newest_only=True)
-                        gap_candidate = None
-                    except SnapshotError as overlap_exc:
-                        if not any(reason in str(overlap_exc) for reason in (
-                            "without an identifiable overlap",
-                            "Insufficient overlap",
-                        )):
-                            raise
-                        fingerprints = tuple(feed_fingerprint(card) for card in cards)
-                        if gap_candidate != fingerprints:
-                            gap_candidate = fingerprints
-                            raise
-                        store.rebaseline_after_gap(cards)
+                    if first_successful_read and store.stale_after_outage():
+                        # The old selector may have blocked monitoring for days.
+                        # Old visible signals must never be pushed to a trading
+                        # Discord channel as newly issued alerts on restart.
+                        store.baseline_after_outage(cards)
+                        new_count, baseline = 0, False
                         gap_candidate = None
                         LOG.error(
-                            "JIFU MONITORING GAP: old feed disappeared; saved a "
-                            "new stable cursor (%s cards). Old visible cards "
-                            "were NOT replayed because their identity is uncertain. "
-                            "New signals will resume; inspect JIFU manually for "
-                            "missed signals during the outage.",
+                            "JIFU PROLONGED MONITORING GAP: saved a new baseline "
+                            "(%s visible cards). No historical alerts replayed. "
+                            "Only signals arriving AFTER this baseline will post.",
                             len(cards),
                         )
-                        new_count, baseline = 0, False
+                    else:
+                        try:
+                            new_count, baseline = store.observe(cards, allow_newest_only=True)
+                            gap_candidate = None
+                        except SnapshotError as overlap_exc:
+                            if not any(reason in str(overlap_exc) for reason in (
+                                "without an identifiable overlap",
+                                "Insufficient overlap",
+                            )):
+                                raise
+                            fingerprints = tuple(feed_fingerprint(card) for card in cards)
+                            if gap_candidate != fingerprints:
+                                gap_candidate = fingerprints
+                                raise
+                            store.rebaseline_after_gap(cards)
+                            gap_candidate = None
+                            LOG.error(
+                                "JIFU MONITORING GAP: old feed disappeared; saved a "
+                                "new stable cursor (%s cards). Old visible cards "
+                                "were NOT replayed because their identity is uncertain. "
+                                "New signals will resume; inspect JIFU manually for "
+                                "missed signals during the outage.",
+                                len(cards),
+                            )
+                            new_count, baseline = 0, False
+                    first_successful_read = False
                     if baseline:
                         LOG.info("Mixed feed baseline: %s existing cards, %s monitored cards; history not replayed",
                                  len(cards), sum(is_monitored_card(card) for card in cards))
